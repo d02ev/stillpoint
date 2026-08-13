@@ -1,5 +1,10 @@
-"""Background render worker: runs ffmpeg off the UI thread and reports progress
-and completion through thread-safe queues."""
+"""Background workers: run long work off the UI thread and report progress and
+completion through thread-safe queues.
+
+``RenderWorker`` drives ffmpeg for an export; ``DownloadWorker`` drives a
+YouTube audio download. The GUI polls either with ``root.after`` and never
+blocks the window (Constitution II).
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import model as model_mod, render
+from .. import download, model as model_mod, render
 
 
 @dataclass
@@ -46,3 +51,49 @@ class RenderWorker:
             self._queue.put(RenderStatus("done", str(self._out)))
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI thread
             self._queue.put(RenderStatus("error", str(exc)))
+
+
+class DownloadWorker:
+    """Runs download_track in a daemon thread; poll poll() from the UI.
+
+    ``stop()`` sets a thread-safe flag that aborts the running fetch; any temp
+    files are deleted and no partial track ever reaches the project.
+    """
+
+    def __init__(self, project: model_mod.Project, url: str, *, fetch=None):
+        self._queue: "queue.Queue[download.DownloadEvent]" = queue.Queue()
+        self._stop = threading.Event()
+        self._project = project
+        self._url = url
+        self._fetch = fetch
+        self._thread = threading.Thread(target=self._run, name="stillpoint-download", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def poll(self) -> download.DownloadEvent | None:
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        try:
+            download.download_track(
+                self._project,
+                self._url,
+                progress=lambda event: self._queue.put(event),
+                should_stop=self._stop.is_set,
+                fetch=self._fetch,
+            )
+        except download.DownloadStopped:
+            pass  # the 'stopped' event is already queued
+        except download.DownloadError:
+            pass  # the 'error' event is already queued
+        except Exception as exc:  # noqa: BLE001 - never surface a traceback
+            from .. import youtube
+
+            self._queue.put(download.DownloadEvent("error", 0.0, youtube.OTHER_MESSAGE))

@@ -23,10 +23,11 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog
 
-from .. import dialogs, model as model_mod, theme
+from .. import dialogs, model as model_mod, theme, youtube
 from . import icons, panels
 from .channels import MUSIC_ROLE, VOICE_ROLE, ChannelRow
-from .panels import AdjustmentPanel, DownloadPanel, ImagePanel, PanelManager
+from .download_panel import DownloadPanel
+from .panels import AdjustmentPanel, ImagePanel, PanelManager
 from .rail import Rail
 from .transport import Transport
 
@@ -106,7 +107,7 @@ class EditorScreen(tk.Frame):
     def _build_panels(self) -> None:
         self._panel_widgets = {
             panels.PANEL_IMAGE: ImagePanel(self._panel_host),
-            panels.PANEL_DOWNLOAD: DownloadPanel(self._panel_host),
+            panels.PANEL_DOWNLOAD: DownloadPanel(self._panel_host, on_import=self._on_import_track),
             panels.PANEL_ADJUSTMENT: AdjustmentPanel(self._panel_host),
         }
 
@@ -123,6 +124,8 @@ class EditorScreen(tk.Frame):
         voice_state, voice_name = _channel_state_for(project, VOICE_ROLE)
         self._music_row.set_state(music_state, music_name)
         self._voice_row.set_state(voice_state, voice_name)
+
+        self._panel_widgets[panels.PANEL_DOWNLOAD].set_project(project)
 
         self._panels.reset()
         self._apply_panel_visibility()
@@ -166,6 +169,34 @@ class EditorScreen(tk.Frame):
         if not path:
             return
         dialogs.info("Stillpoint", _IMPORT_NOTICE, parent=self)
+
+    def _on_import_track(self, filename: str) -> None:
+        """Import a downloaded track into the background-music channel.
+
+        Performs the model write (immediate atomic save), then refreshes the
+        channel row and the panel list in place — the panel stays open (FR-015).
+        """
+        project = self.app.project
+        if project is None:
+            return
+        current = project.movie.audio
+        if current is not None and current.filename == filename:
+            return  # clicking the track already in the channel is a no-op (FR-017)
+        try:
+            project.set_background_music(filename)
+        except ValueError:
+            dialogs.info("Stillpoint", youtube.OTHER_MESSAGE, parent=self)
+            return
+        self._refresh_music_row()
+        self._panel_widgets[panels.PANEL_DOWNLOAD].refresh_list()
+
+    def _refresh_music_row(self) -> None:
+        """Re-derive and repaint the music channel row without touching panels."""
+        project = self.app.project
+        if project is None:
+            return
+        state, name = _channel_state_for(project, MUSIC_ROLE)
+        self._music_row.set_state(state, name)
 
     def _on_channel_click(self, role: str) -> None:
         self._panels.aim_at(role)

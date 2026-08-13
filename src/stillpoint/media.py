@@ -12,6 +12,7 @@ import os
 import shutil
 import struct
 import subprocess
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -162,3 +163,39 @@ def import_image(source: Path, out_path: Path, width: int, height: int) -> Path:
     image = open_image(source)
     fitted = cover_transform(image, width, height)
     return save_image_jpeg(fitted, out_path)
+
+
+# -- audio conversion ------------------------------------------------------------
+
+
+def convert_to_m4a(src: Path, out: Path) -> None:
+    """Convert any audio file to the standard .m4a/AAC (≥192 kbps).
+
+    Writes to a temp file in the destination directory and moves it into place
+    with ``os.replace`` so an interrupted conversion never leaves a partial file
+    (FR-008, Constitution IV).
+    """
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent)
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        cmd = [
+            str(ffmpeg_path()),
+            "-y", "-v", "error",
+            "-i", str(src),
+            "-vn",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            str(tmp),
+        ]
+        subprocess.run([str(c) for c in cmd], capture_output=True, check=True, timeout=600)
+        os.replace(tmp, out)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", errors="replace")[-500:]
+        raise RuntimeError(f"audio conversion failed:\n{detail}") from exc
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass

@@ -251,6 +251,23 @@ class Project:
         self.images.append(item)
         return item
 
+    def set_background_music(self, filename: str) -> MediaItem:
+        """Import a downloaded track into channel 1 (background music).
+
+        Assigns a fresh ``MediaItem`` to ``movie.audio`` (replacing any previous
+        music — swap, FR-016), then saves ``project.json`` immediately and
+        atomically via :meth:`save` (reconciliation R2). No new schema fields.
+        Raises ``ValueError`` if the file is not present in ``media/`` (an
+        internal disk race, surfaced as a plain "try again" message).
+        """
+        source = self.media_dir() / filename
+        if not source.is_file():
+            raise ValueError(f"no audio file named {filename!r} in this project")
+        item = MediaItem(kind="audio", filename=filename)
+        self.movie.audio = item
+        self.save()
+        return item
+
     # -- export / share -----------------------------------------------------
 
     def make_share_archive(self, zip_path: Path) -> None:

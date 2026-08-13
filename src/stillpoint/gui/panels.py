@@ -2,8 +2,10 @@
 
 ``PanelManager`` is a pure, display-free class owning the one-panel-at-a-time
 and aim rules (FR-007, FR-008, FR-015) so they are unit-testable headlessly.
-The three panel widgets below are thin frames packed into the fixed-width
-column beside the rail; their contents are stubs (real logic is Specs 3, 4-6, 7).
+The image and adjustment panel widgets are thin frames packed into the
+fixed-width column beside the rail; their contents are stubs (real logic is
+Specs 4-7). The audio-download panel is the real widget in
+``gui/download_panel.py`` (Spec 3).
 """
 
 from __future__ import annotations
@@ -79,14 +81,6 @@ class ImagePanel(_PanelFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, PANEL_TITLES[PANEL_IMAGE], **kwargs)
         self._note("You'll be able to find and add pictures for your film here.")
-
-
-class DownloadPanel(_PanelFrame):
-    """Stub: fetching music from YouTube arrives in Spec 3."""
-
-    def __init__(self, master, **kwargs):
-        super().__init__(master, PANEL_TITLES[PANEL_DOWNLOAD], **kwargs)
-        self._note("You'll be able to fetch music from YouTube here.")
 
 
 class AdjustmentPanel(_PanelFrame):
