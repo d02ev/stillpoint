@@ -47,7 +47,8 @@ def channel_state(movie, role: str) -> tuple[str, str | None]:
 
 
 class ChannelRow(tk.Frame):
-    """One channel: a title plus either the empty-state actions or the name.
+    """One channel: a title plus either the empty-state actions, the name, or
+    the importing progress line.
 
     ``on_download`` is only wired for the music role; ``on_import`` for both.
     A loaded row is clickable and calls ``on_click(role)``.
@@ -73,7 +74,7 @@ class ChannelRow(tk.Frame):
     # -- state -----------------------------------------------------------
 
     def set_state(self, state: str, display_name: str | None) -> None:
-        if state not in ("empty", "loaded"):
+        if state not in ("empty", "importing", "loaded"):
             raise ValueError(f"unknown channel state: {state!r}")
         self._state = state
         self._set_state(state, display_name)
@@ -83,6 +84,8 @@ class ChannelRow(tk.Frame):
             child.destroy()
         if state == "loaded":
             self._render_loaded(display_name or "audio")
+        elif state == "importing":
+            self._render_importing(display_name or "")
         else:
             self._render_empty()
 
@@ -95,6 +98,11 @@ class ChannelRow(tk.Frame):
         if self._role == MUSIC_ROLE:
             self._action_button(self._body, "download", "Download from YouTube", self._on_download)
         self._action_button(self._body, "import", "Import from computer", self._on_import)
+
+    def _render_importing(self, detail: str) -> None:
+        tk.Label(self._body, text=detail, bg=theme.Palette.panel, fg=theme.Palette.text,
+                 font=(theme.FONT_FAMILY, theme.FONT_SIZE), justify="left", anchor="w"
+                 ).pack(fill="x", pady=2)
 
     def _render_loaded(self, display_name: str) -> None:
         row = tk.Frame(self._body, bg=theme.Palette.panel_light, cursor="hand2")

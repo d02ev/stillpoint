@@ -13,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -168,12 +169,20 @@ def import_image(source: Path, out_path: Path, width: int, height: int) -> Path:
 # -- audio conversion ------------------------------------------------------------
 
 
-def convert_to_m4a(src: Path, out: Path) -> None:
+def convert_to_m4a(src: Path, out: Path, *, progress_cb=None, timeout: int | None = 600) -> None:
     """Convert any audio file to the standard .m4a/AAC (≥192 kbps).
 
     Writes to a temp file in the destination directory and moves it into place
     with ``os.replace`` so an interrupted conversion never leaves a partial file
     (FR-008, Constitution IV).
+
+    ``progress_cb(fraction)``, when set, reports a 0..1 fraction streamed from
+    ffmpeg's ``-progress pipe:1`` against the ffprobed source duration (the
+    ``render_with_progress`` pattern), capped below 1.0 until the file is moved
+    into place; when the duration can't be probed, conversion proceeds with no
+    fraction (the UI shows the indeterminate line). ``timeout`` bounds the run —
+    the import path passes ``None`` (no cap, FR-009); the download path keeps
+    the existing 600 s default.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent)
@@ -189,8 +198,12 @@ def convert_to_m4a(src: Path, out: Path) -> None:
             "-b:a", "192k",
             str(tmp),
         ]
-        subprocess.run([str(c) for c in cmd], capture_output=True, check=True, timeout=600)
-        os.replace(tmp, out)
+        if progress_cb is None:
+            subprocess.run([str(c) for c in cmd], capture_output=True, check=True, timeout=timeout)
+            os.replace(tmp, out)
+        else:
+            cmd += ["-progress", "pipe:1", "-nostats"]
+            _convert_with_progress(cmd, src, tmp, out, progress_cb, timeout)
     except subprocess.CalledProcessError as exc:
         detail = exc.stderr.decode("utf-8", errors="replace")[-500:]
         raise RuntimeError(f"audio conversion failed:\n{detail}") from exc
@@ -199,3 +212,59 @@ def convert_to_m4a(src: Path, out: Path) -> None:
             tmp.unlink()
         except OSError:
             pass
+
+
+def _convert_with_progress(cmd, src: Path, tmp: Path, out: Path, progress_cb, timeout: int | None) -> None:
+    """Run an ffmpeg conversion, streaming ``-progress pipe:1`` into ``progress_cb``."""
+    duration = None
+    try:
+        duration = probe_duration(src)
+    except Exception:  # noqa: BLE001 - unknown duration → indeterminate line
+        duration = None
+
+    process = subprocess.Popen(
+        [str(c) for c in cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    timer = None
+    if timeout is not None:
+
+        def _kill() -> None:
+            process.kill()
+
+        timer = threading.Timer(timeout, _kill)
+        timer.daemon = True
+        timer.start()
+    try:
+        last_fraction = 0.0
+
+        def _update(key: str, value: str) -> None:
+            nonlocal last_fraction
+            if key != "out_time_us" or not duration:
+                return
+            try:
+                elapsed = int(value) / 1_000_000
+                fraction = min(0.999, elapsed / duration)
+            except ValueError:
+                return
+            if fraction - last_fraction >= 0.005:
+                last_fraction = fraction
+                progress_cb(fraction)
+
+        for line in process.stdout:  # -progress pipe:1 writes key=value to stdout
+            text = line.decode("utf-8", errors="replace").strip()
+            if "=" in text:
+                key, _, value = text.partition("=")
+                _update(key, value)
+        err = process.stderr.read().decode("utf-8", errors="replace")
+        process.wait()
+    finally:
+        if timer is not None:
+            timer.cancel()
+    if process.returncode != 0:
+        raise RuntimeError(f"audio conversion failed:\n{err[-500:]}")
+    os.replace(tmp, out)
+    progress_cb(1.0)

@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import download, model as model_mod, render
+from .. import download, import_audio, model as model_mod, render
 
 
 @dataclass
@@ -97,3 +97,41 @@ class DownloadWorker:
             from .. import youtube
 
             self._queue.put(download.DownloadEvent("error", 0.0, youtube.OTHER_MESSAGE))
+
+
+class ImportWorker:
+    """Runs import_local_audio in a daemon thread; poll poll() from the UI.
+
+    Mirrors ``DownloadWorker`` minus the stop flag — import is run-to-completion
+    (FR-009). The one-import-at-a-time rule is guarded by the editor.
+    """
+
+    def __init__(self, project: model_mod.Project, source: str, *, convert=None):
+        self._queue: "queue.Queue[import_audio.ImportEvent]" = queue.Queue()
+        self._project = project
+        self._source = source
+        self._convert = convert
+        self._thread = threading.Thread(target=self._run, name="stillpoint-import", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def poll(self) -> import_audio.ImportEvent | None:
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        try:
+            import_audio.import_local_audio(
+                self._project,
+                self._source,
+                progress=lambda event: self._queue.put(event),
+                convert=self._convert,
+            )
+        except import_audio.ImportError:
+            pass  # the 'error' event is already queued
+        except Exception as exc:  # noqa: BLE001 - never surface a traceback
+            kind, message = import_audio.classify_import_error(exc)
+            self._queue.put(import_audio.ImportEvent("error", 0.0, message))

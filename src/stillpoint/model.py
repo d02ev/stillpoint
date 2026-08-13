@@ -268,6 +268,23 @@ class Project:
         self.save()
         return item
 
+    def set_voice(self, filename: str) -> MediaItem:
+        """Import a local voice file into channel 2 (voice).
+
+        Mirrors :meth:`set_background_music`: assigns a fresh ``MediaItem`` to
+        ``movie.voice``, then saves ``project.json`` immediately and atomically
+        (reconciliation R2). No new schema fields (Constitution VIII). Raises
+        ``ValueError`` if the file is not present in ``media/`` (an internal
+        disk race, surfaced as the plain "try again" message).
+        """
+        source = self.media_dir() / filename
+        if not source.is_file():
+            raise ValueError(f"no audio file named {filename!r} in this project")
+        item = MediaItem(kind="audio", filename=filename)
+        self.movie.voice = item
+        self.save()
+        return item
+
     # -- export / share -----------------------------------------------------
 
     def make_share_archive(self, zip_path: Path) -> None:
