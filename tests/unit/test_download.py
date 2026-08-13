@@ -123,7 +123,9 @@ def test_classify_reraised_stop():
 
 def test_download_options_are_audio_only_with_hook():
     events = []
-    options = youtube.build_download_options(r"X:\%(title)s.%(ext)s", events.append, lambda: False)
+    options = youtube.build_download_options(
+        r"X:\%(title)s.%(ext)s", lambda state, value, detail: events.append((state, value, detail)), lambda: False
+    )
     assert options["format"] == youtube.EXTRACT_FORMAT
     assert options["noplaylist"] is True
     assert options["outtmpl"] == r"X:\%(title)s.%(ext)s"
@@ -232,7 +234,7 @@ def test_download_track_rejects_bad_link_without_fetch(tmp_path):
     assert events[-1].state == "error"
     assert events[-1].detail == youtube.BAD_LINK_MESSAGE
     assert download.list_downloaded_tracks(project) == []
-    assert not project.project_file.read_text().count("audio")
+    assert project.movie.audio is None and project.movie.voice is None
 
 
 def test_download_track_surfaces_classified_failure(tmp_path):
