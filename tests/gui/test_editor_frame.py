@@ -1,7 +1,8 @@
 """GUI smoke tests for the composed editor frame (research Decision 6).
 
 These build the real frame on the shared Tk root fixture and drive clicks with
-monkeypatched dialogs/file pickers so no modal window ever blocks.
+monkeypatched dialogs/file pickers so no modal window ever blocks. The import
+flow is driven with a scripted fake worker so no real conversion ever runs.
 """
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from stillpoint import model as model_mod
 from stillpoint.gui.app import App
 from stillpoint.gui import panels
+from stillpoint.import_audio import UNREADABLE_MESSAGE, ImportEvent
 
 
 @pytest.fixture
@@ -17,6 +19,33 @@ def app(tk_root):
     yield instance, tk_root
     for child in tk_root.winfo_children():
         child.destroy()
+
+
+@pytest.fixture
+def fake_import_worker(monkeypatch):
+    """Replaces editor.ImportWorker with a scriptable fake (no real thread)."""
+    from stillpoint.gui import editor as editor_mod
+
+    class FakeWorker:
+        script = []
+        instances = []
+
+        def __init__(self, project, source, *, convert=None):
+            self.project = project
+            self.source = source
+            self.events = list(FakeWorker.script)
+            FakeWorker.instances.append(self)
+
+        def start(self):
+            pass
+
+        def poll(self):
+            return self.events.pop(0) if self.events else None
+
+    monkeypatch.setattr(editor_mod, "ImportWorker", FakeWorker)
+    yield FakeWorker
+    FakeWorker.script = []
+    FakeWorker.instances = []
 
 
 def _open_empty_project(instance, tmp_path, title="First Mix"):
@@ -114,19 +143,19 @@ def test_empty_music_channel_download_opens_panel(app, tmp_path):
     assert editor._panels.visible == panels.PANEL_DOWNLOAD
 
 
-def test_empty_music_channel_import_picks_then_notices(app, tmp_path, monkeypatch):
+def test_empty_music_channel_import_starts_real_flow(app, tmp_path, monkeypatch, fake_import_worker):
     instance, root = app
     _open_empty_project(instance, tmp_path)
     editor = instance._editor
 
     monkeypatch.setattr("stillpoint.gui.editor.pick_audio_file", lambda parent=None: str(tmp_path / "a.mp3"))
-    noticed = []
-    monkeypatch.setattr("stillpoint.dialogs.info", lambda *a, **k: noticed.append(a))
-    editor._on_import()
-    assert noticed and "ready yet" in noticed[0][1]
+    editor._music_row._on_import()
+    assert editor._music_row.state() == "importing"
+    assert fake_import_worker.instances
+    assert fake_import_worker.instances[0].source == str(tmp_path / "a.mp3")
 
 
-def test_import_cancel_shows_no_notice(app, tmp_path, monkeypatch):
+def test_import_cancel_shows_no_notice(app, tmp_path, monkeypatch, fake_import_worker):
     instance, root = app
     _open_empty_project(instance, tmp_path)
     editor = instance._editor
@@ -134,20 +163,25 @@ def test_import_cancel_shows_no_notice(app, tmp_path, monkeypatch):
     monkeypatch.setattr("stillpoint.gui.editor.pick_audio_file", lambda parent=None: "")
     noticed = []
     monkeypatch.setattr("stillpoint.dialogs.info", lambda *a, **k: noticed.append(a))
-    editor._on_import()
+    editor._music_row._on_import()
     assert noticed == []
+    assert not fake_import_worker.instances
+    assert editor._music_row.state() == "empty"
 
 
-def test_import_never_modifies_project(app, tmp_path, monkeypatch):
+def test_import_error_never_modifies_project(app, tmp_path, monkeypatch, fake_import_worker):
     instance, root = app
     project = _open_empty_project(instance, tmp_path)
     editor = instance._editor
 
     monkeypatch.setattr("stillpoint.gui.editor.pick_audio_file", lambda parent=None: str(tmp_path / "a.mp3"))
     monkeypatch.setattr("stillpoint.dialogs.info", lambda *a, **k: None)
-    editor._on_import()
+    fake_import_worker.script = [ImportEvent("error", 0.0, UNREADABLE_MESSAGE)]
+    editor._music_row._on_import()
     assert project.movie.audio is None
     assert project.movie.voice is None
+    assert editor._music_row.state() == "empty"
+    assert not (project.media_dir() / "a.mp3").exists()
 
 
 # -- User Story 4: empty voice channel has one action --------------------------
@@ -168,16 +202,16 @@ def test_empty_voice_channel_has_import_but_no_download(app, tmp_path):
     assert editor._voice_row._on_download is None
 
 
-def test_voice_import_notice(app, tmp_path, monkeypatch):
+def test_voice_import_starts_real_flow(app, tmp_path, monkeypatch, fake_import_worker):
     instance, root = app
     _open_empty_project(instance, tmp_path)
     editor = instance._editor
 
     monkeypatch.setattr("stillpoint.gui.editor.pick_audio_file", lambda parent=None: str(tmp_path / "v.wav"))
-    noticed = []
-    monkeypatch.setattr("stillpoint.dialogs.info", lambda *a, **k: noticed.append(a))
-    editor._on_import()
-    assert noticed and "ready yet" in noticed[0][1]
+    editor._voice_row._on_import()
+    assert editor._voice_row.state() == "importing"
+    assert fake_import_worker.instances
+    assert fake_import_worker.instances[0].source == str(tmp_path / "v.wav")
 
 
 # -- User Story 5: loaded channel opens aimed adjustment panel -------------------
@@ -255,7 +289,7 @@ def test_export_shows_notice(app, tmp_path, monkeypatch):
     assert noticed and "Exporting isn't ready yet" in noticed[0][1]
 
 
-def test_stub_actions_never_write_files(app, tmp_path, monkeypatch):
+def test_stub_actions_never_write_files(app, tmp_path, monkeypatch, fake_import_worker):
     instance, root = app
     project = _open_empty_project(instance, tmp_path)
     editor = instance._editor
@@ -263,7 +297,7 @@ def test_stub_actions_never_write_files(app, tmp_path, monkeypatch):
     monkeypatch.setattr("stillpoint.gui.editor.pick_audio_file", lambda parent=None: str(tmp_path / "a.mp3"))
 
     before = {p.name for p in (tmp_path / "First Mix").iterdir()}
-    editor._on_import()
+    editor._music_row._on_import()  # worker polls nothing → no file is written
     editor._on_export()
     editor._on_rail_toggle(panels.PANEL_IMAGE)
     editor._on_rail_toggle(panels.PANEL_IMAGE)

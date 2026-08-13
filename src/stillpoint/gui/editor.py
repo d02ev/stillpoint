@@ -23,23 +23,23 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog
 
-from .. import dialogs, model as model_mod, theme, youtube
+from .. import dialogs, import_audio, model as model_mod, theme, youtube
 from . import icons, panels
 from .channels import MUSIC_ROLE, VOICE_ROLE, ChannelRow
 from .download_panel import DownloadPanel
 from .panels import AdjustmentPanel, ImagePanel, PanelManager
 from .rail import Rail
 from .transport import Transport
+from .workers import ImportWorker
 
 _PANEL_WIDTH = 260
 _DEFAULT_GEOMETRY = "1280x760"
 _MIN_SIZE = (960, 600)
 
-_AUDIO_FILETYPES = [("Audio", "*.mp3 *.wav *.m4a *.ogg *.flac"), ("All files", "*.*")]
+_AUDIO_FILETYPES = [("Audio", "*.mp3 *.wav *.m4a *.ogg *.flac *.aac *.opus"), ("All files", "*.*")]
 
-_IMPORT_NOTICE = ("Importing from your computer isn't ready yet. "
-                  "You'll be able to add files here soon.")
 _EXPORT_NOTICE = "Exporting isn't ready yet. You'll be able to save your video here soon."
+_IMPORT_POLL_MS = 100
 
 
 class EditorScreen(tk.Frame):
@@ -48,6 +48,8 @@ class EditorScreen(tk.Frame):
         self.app = app
         self._panels = PanelManager()
         self._panel_widgets: dict[str, tk.Frame] = {}
+        self._import_worker: ImportWorker | None = None
+        self._import_role: str | None = None
 
         self._build_top_bar()
         self._build_body()
@@ -92,14 +94,14 @@ class EditorScreen(tk.Frame):
 
         self._music_row = ChannelRow(
             main, role=MUSIC_ROLE,
-            on_download=self._open_download_panel, on_import=self._on_import,
+            on_download=self._open_download_panel, on_import=lambda: self._start_import(MUSIC_ROLE),
             on_click=self._on_channel_click,
         )
         self._music_row.pack(fill="x", pady=theme.PAD_SMALL)
 
         self._voice_row = ChannelRow(
             main, role=VOICE_ROLE,
-            on_download=None, on_import=self._on_import,
+            on_download=None, on_import=lambda: self._start_import(VOICE_ROLE),
             on_click=self._on_channel_click,
         )
         self._voice_row.pack(fill="x", pady=theme.PAD_SMALL)
@@ -164,12 +166,6 @@ class EditorScreen(tk.Frame):
         self._panels.open(panels.PANEL_DOWNLOAD)
         self._apply_panel_visibility()
 
-    def _on_import(self) -> None:
-        path = pick_audio_file(parent=self)
-        if not path:
-            return
-        dialogs.info("Stillpoint", _IMPORT_NOTICE, parent=self)
-
     def _on_import_track(self, filename: str) -> None:
         """Import a downloaded track into the background-music channel.
 
@@ -189,6 +185,80 @@ class EditorScreen(tk.Frame):
             return
         self._refresh_music_row()
         self._panel_widgets[panels.PANEL_DOWNLOAD].refresh_list()
+
+    # -- local audio import ---------------------------------------------------
+
+    def _start_import(self, role: str) -> None:
+        """Run the pick → convert → assign flow for one channel (FR-003…FR-012).
+
+        One import at a time: a second click while one is in flight shows the
+        plain wait line and does nothing else (two conversions would contend on
+        the weak CPU — Constitution II).
+        """
+        if self._import_worker is not None:
+            dialogs.info("Stillpoint", import_audio.WAIT_MESSAGE, parent=self)
+            return
+        path = pick_audio_file(parent=self)
+        if not path:
+            return  # cancelling the picker changes nothing (FR-003)
+        project = self.app.project
+        if project is None:
+            return
+        self._import_role = role
+        self._row_for(role).set_state("importing", import_audio.IMPORTING)
+        worker = ImportWorker(project, path)
+        self._import_worker = worker
+        worker.start()
+        self._poll_import()
+
+    def _poll_import(self) -> None:
+        worker = self._import_worker
+        if worker is None:
+            return
+        while True:
+            event = worker.poll()
+            if event is None:
+                break
+            self._apply_import_event(event)
+            if event.state in ("done", "error"):
+                self._import_worker = None
+                break
+        if self._import_worker is not None:
+            try:
+                self.after(_IMPORT_POLL_MS, self._poll_import)
+            except tk.TclError:
+                pass
+
+    def _apply_import_event(self, event) -> None:
+        if event.state == "importing":
+            self._row_for(self._import_role or MUSIC_ROLE).set_state("importing", event.detail)
+        elif event.state == "done":
+            self._finish_import(event.detail)
+        elif event.state == "error":
+            self._row_for(self._import_role or MUSIC_ROLE).set_state("empty", None)
+            dialogs.info("Stillpoint", event.detail, parent=self)
+
+    def _finish_import(self, filename: str) -> None:
+        """Assign the stored copy to its channel's role and refresh the UI."""
+        role = self._import_role or MUSIC_ROLE
+        project = self.app.project
+        if project is None:
+            return
+        try:
+            if role == VOICE_ROLE:
+                project.set_voice(filename)
+            else:
+                project.set_background_music(filename)
+        except ValueError:
+            self._row_for(role).set_state("empty", None)
+            dialogs.info("Stillpoint", import_audio.OTHER_MESSAGE, parent=self)
+            return
+        state, name = _channel_state_for(project, role)
+        self._row_for(role).set_state(state, name)
+        self._panel_widgets[panels.PANEL_DOWNLOAD].refresh_list()
+
+    def _row_for(self, role: str) -> ChannelRow:
+        return self._music_row if role == MUSIC_ROLE else self._voice_row
 
     def _refresh_music_row(self) -> None:
         """Re-derive and repaint the music channel row without touching panels."""
