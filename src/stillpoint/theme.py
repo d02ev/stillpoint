@@ -9,25 +9,34 @@ from __future__ import annotations
 # -- colours --------------------------------------------------------------
 
 class Palette:
-    """Named colours; every accent is derived from the single 'accent'."""
+    """Named colours; every accent is derived from the single 'accent'.
 
-    accent = "#8E7CC3"
-    accent_hover = "#A08ED0"
-    accent_soft = "#3B3450"
+    The editor frame is light and warm throughout (spec 002 FR-001, SC-007):
+    no dark surfaces, all text readable against its background.
+    """
 
-    background = "#12121A"
-    panel = "#1A1A24"
-    panel_light = "#20202C"
-    border = "#2E2E3E"
+    accent = "#B66B2E"  # warm clay orange; the one accent all others derive from
+    accent_hover = "#C97E3F"
+    accent_soft = "#EFD9BE"  # pale warm tint for selected rows
 
-    text = "#ECECF2"
-    text_dim = "#9A9AA8"
-    text_faint = "#6E6E7E"
+    background = "#F7F1E7"  # warm paper
+    panel = "#F1E7D6"  # slightly deeper warm surface
+    panel_light = "#FBF7F0"  # raised surfaces, buttons
 
-    danger = "#C25A5A"
-    danger_hover = "#D07070"
+    border = "#E0D2BA"
+    rail = "#EDE2CE"  # the thin icon rail column
 
-    good = "#6DBE7B"
+    text = "#3A3228"  # warm near-black, strong contrast on every surface
+    text_dim = "#6E6353"
+    text_faint = "#9C917F"
+
+    disabled = "#C9BCA6"  # disabled control / icon tint
+    disabled_text = "#B4A68E"
+
+    danger = "#B14A38"
+    danger_hover = "#C25A46"
+
+    good = "#5E8B53"
 
     # Alpha-free overlay used by the picture-in-picture preview.
     preview_overlay = "#000000"

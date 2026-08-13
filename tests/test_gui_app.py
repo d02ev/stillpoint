@@ -56,15 +56,13 @@ def test_show_home_clears_project(app, tmp_path):
     assert instance._current is instance._home
 
 
-def test_editor_refresh_populates_controls(app, tmp_path):
+def test_editor_refresh_populates_frame(app, tmp_path):
     instance, _root = app
     project = model_mod.new_project("Ctrl", tmp_path / "Ctrl", "t0")
-    project.movie.crossfade = 1.5
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
     project.save()
     instance.open_project(tmp_path / "Ctrl")
     editor = instance._editor
     assert editor._title_label.cget("text") == "Ctrl"
-    assert editor._crossfade.get() == 1.5
-    editor._crossfade.set(2.0)
-    editor._on_crossfade()
-    assert instance.project.movie.crossfade == 2.0
+    assert editor._music_row.state() == "loaded"
+    assert editor._voice_row.state() == "empty"

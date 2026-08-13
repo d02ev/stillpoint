@@ -89,12 +89,13 @@ class MediaItem:
 
 @dataclass
 class Movie:
-    """A movie: ordered images + an optional ambient audio track."""
+    """A movie: ordered images plus the two audio roles (music + voice)."""
 
     duration: float = 60.0
     ratio: str = RATIO_WIDE
     crossfade: float = 0.0  # seconds, applied between consecutive images
-    audio: MediaItem | None = None
+    audio: MediaItem | None = None  # background music role
+    voice: MediaItem | None = None  # voice role
 
     def to_dict(self) -> dict:
         return {
@@ -102,6 +103,7 @@ class Movie:
             "ratio": self.ratio,
             "crossfade": round(self.crossfade, 3),
             "audio": self.audio.to_dict() if self.audio else None,
+            "voice": self.voice.to_dict() if self.voice else None,
         }
 
     @classmethod
@@ -110,12 +112,15 @@ class Movie:
         if ratio not in RATIO_CHOICES:
             raise ValueError(f"unsupported ratio: {ratio}")
         audio_data = data.get("audio")
+        voice_data = data.get("voice")
         audio = MediaItem.from_dict(audio_data) if audio_data else None
+        voice = MediaItem.from_dict(voice_data) if voice_data else None
         return cls(
             duration=float(data.get("duration", 60.0)),
             ratio=ratio,
             crossfade=float(data.get("crossfade", 0.0)),
             audio=audio,
+            voice=voice,
         )
 
 
