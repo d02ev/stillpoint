@@ -5,16 +5,18 @@ Layout, top to bottom (contracts/editor-ui.md):
     +------------------------------------------------------------------+
     | First Mix                                        [Export]        |  top bar
     |------------------------------------------------------------------|
-    | |I|  Background music                                            |
-    | |I|  [Download from YouTube]  [Import from computer]             |  rail | panel
-    | |I|                                                              |  host | main
-    | |I|  Voice                             [▶/❚❚] [Start over]      |       | area
+    | |I|  Background picture                                          |
+    | |I|  [Find a picture]                     [▶/❚❚] [Start over]    | rail | panel
+    | |I|  Background music                                            | host | main
+    | |I|  [Download from YouTube]  [Import from computer]             |      | area
+    | |I|  Voice                             [▶/❚❚] [Start over]      |
     | |I|  [Import from computer]                                      |
     +------------------------------------------------------------------+
 
 This file is the only composer: it owns the top bar, the rail, the fixed-width
-panel host, the two channel rows, and the transport, and wires their click
-routes. Layout and visibility rules delegate to the small widgets and the pure
+panel host, the picture row and the two channel rows, and the transport, and
+wires their click routes. Layout and visibility rules delegate to the small
+widgets and the pure
 `PanelManager`. Playback runs a real `PlaybackSession` (worker-thread bake,
 streaming sink): play/pause/resume/Start over, end-of-mix returns the control
 to play, and shaping-slider events are written through the project's atomic
@@ -27,11 +29,12 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog
 
-from .. import dialogs, import_audio, model as model_mod, theme, youtube
+from .. import dialogs, import_audio, model as model_mod, pexels, theme, youtube
 from .. import playback as playback_mod
 from . import icons, panels, transport as transport_mod
 from .channels import MUSIC_ROLE, VOICE_ROLE, ChannelRow
 from .download_panel import DownloadPanel
+from .image_panel import PictureRow
 from .panels import AdjustmentPanel, ImagePanel, PanelManager
 from ..playback import PlaybackSession
 from .rail import Rail
@@ -106,6 +109,9 @@ class EditorScreen(tk.Frame):
         self._transport = Transport(main, on_play=self._on_transport, on_start_over=self._on_start_over)
         self._transport.pack(side="bottom", anchor="w", pady=theme.PAD_SMALL)
 
+        self._picture_row = PictureRow(main, on_click=self._open_image_panel)
+        self._picture_row.pack(fill="x", pady=theme.PAD_SMALL)
+
         self._music_row = ChannelRow(
             main, role=MUSIC_ROLE,
             on_download=self._open_download_panel, on_import=lambda: self._start_import(MUSIC_ROLE),
@@ -122,10 +128,22 @@ class EditorScreen(tk.Frame):
 
     def _build_panels(self) -> None:
         self._panel_widgets = {
-            panels.PANEL_IMAGE: ImagePanel(self._panel_host),
+            panels.PANEL_IMAGE: ImagePanel(self._panel_host, on_choose=self._on_choose_image),
             panels.PANEL_DOWNLOAD: DownloadPanel(self._panel_host, on_import=self._on_import_track),
             panels.PANEL_ADJUSTMENT: AdjustmentPanel(self._panel_host, on_setting=self._on_setting),
         }
+
+    def _on_choose_image(self, filename: str) -> None:
+        """Make ``filename`` the film's still background (007, FR-015)."""
+        project = self.app.project
+        if project is None:
+            return
+        try:
+            project.set_background_image(filename)
+        except ValueError:
+            dialogs.info("Stillpoint", pexels.OTHER_MESSAGE, parent=self)
+        self._picture_row.set_project(project)
+        self._panel_widgets[panels.PANEL_IMAGE].refresh_library()
 
     # -- project wiring ----------------------------------------------------
 
@@ -141,8 +159,10 @@ class EditorScreen(tk.Frame):
         self._music_row.set_state(music_state, music_name)
         self._voice_row.set_state(voice_state, voice_name)
 
+        self._picture_row.set_project(project)
         self._panel_widgets[panels.PANEL_DOWNLOAD].set_project(project)
         self._panel_widgets[panels.PANEL_ADJUSTMENT].set_project(project)
+        self._panel_widgets[panels.PANEL_IMAGE].set_project(project)
 
         self._panels.reset()
         self._apply_panel_visibility()
@@ -381,6 +401,10 @@ class EditorScreen(tk.Frame):
 
     def _open_download_panel(self) -> None:
         self._panels.open(panels.PANEL_DOWNLOAD)
+        self._apply_panel_visibility()
+
+    def _open_image_panel(self) -> None:
+        self._panels.open(panels.PANEL_IMAGE)
         self._apply_panel_visibility()
 
     def _on_import_track(self, filename: str) -> None:

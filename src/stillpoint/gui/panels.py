@@ -2,9 +2,10 @@
 
 ``PanelManager`` is a pure, display-free class owning the one-panel-at-a-time
 and aim rules (FR-007, FR-008, FR-015) so they are unit-testable headlessly.
-The image panel is a thin stub frame (real logic is Spec 7); the adjustment
-panel is the real per-channel sound widget (Spec 5); the audio-download panel
-is the real widget in ``gui/download_panel.py`` (Spec 3).
+The real widgets live in their own modules — ``gui/image_panel.py`` (Spec 7),
+``gui/download_panel.py`` (Spec 3) — and ``ImagePanel`` is re-exported here
+lazily so importing ``panels`` never pulls Tk-only widgets. The adjustment
+panel is the real per-channel sound widget (Spec 5).
 """
 
 from __future__ import annotations
@@ -84,14 +85,6 @@ class _PanelFrame(tk.Frame):
         tk.Label(self._body, text=text, bg=theme.Palette.panel, fg=theme.Palette.text_dim,
                  font=(theme.FONT_FAMILY, theme.FONT_SIZE), justify="left", wraplength=self.width - theme.PAD * 2
                  ).pack(anchor="w", pady=theme.PAD_SMALL)
-
-
-class ImagePanel(_PanelFrame):
-    """Stub: picture search/add arrives in Spec 7."""
-
-    def __init__(self, master, **kwargs):
-        super().__init__(master, PANEL_TITLES[PANEL_IMAGE], **kwargs)
-        self._note("You'll be able to find and add pictures for your film here.")
 
 
 class AdjustmentPanel(_PanelFrame):
@@ -207,3 +200,12 @@ class AdjustmentPanel(_PanelFrame):
     def _on_scale(self, value: str) -> None:
         """Compatibility alias: a Volume move reports ``volume`` (delivered tests)."""
         self._on_slider("volume", value)
+
+
+def __getattr__(name: str):
+    """Lazy re-export of the real image panel (module attribute access only)."""
+    if name == "ImagePanel":
+        from .image_panel import ImagePanel
+
+        return ImagePanel
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

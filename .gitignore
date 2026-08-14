@@ -574,3 +574,6 @@ $RECYCLE.BIN/
 .opencode/
 .specify/
 specs/
+
+# Stillpoint secrets (Constitution V)
+src/stillpoint/pexels_key.py

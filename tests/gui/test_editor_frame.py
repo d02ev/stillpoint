@@ -119,9 +119,9 @@ def fake_preview_worker(monkeypatch):
 
 
 def _open_empty_project(instance, tmp_path, title="First Mix"):
-    project = model_mod.new_project(title, tmp_path / title, "t0")
+    model_mod.new_project(title, tmp_path / title, "t0")
     instance.open_project(tmp_path / title)
-    return project
+    return instance.project
 
 
 # -- User Story 1: frame present on open --------------------------------------
@@ -338,6 +338,43 @@ def test_loaded_but_missing_file_still_loaded(app, tmp_path):
     instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="gone.mp3")
     instance._editor.refresh()
     assert instance._editor._music_row.state() == "loaded"
+
+
+# -- 007: the main-area picture row mirrors the audio channel rows --------------
+
+def test_empty_picture_row_find_opens_image_panel(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    editor = instance._editor
+    assert editor._picture_row._current_item() is None
+    editor._picture_row._click()
+    assert editor._panels.visible == panels.PANEL_IMAGE
+
+
+def test_picture_row_loaded_shows_thumbnail_and_opens_panel(app, tmp_path):
+    instance, root = app
+    project = _open_empty_project(instance, tmp_path)
+    from PIL import Image
+
+    Image.new("RGB", (1920, 1080), "red").save(project.media_dir() / "pic.jpg", "JPEG")
+    project.set_background_image("pic.jpg")
+
+    editor = instance._editor
+    editor.refresh()
+    assert editor._picture_row._current_item() is not None
+    assert editor._picture_row._image_ref is not None  # thumbnail rendered
+    editor._picture_row._click()
+    assert editor._panels.visible == panels.PANEL_IMAGE
+
+
+def test_choose_image_updates_picture_row(app, tmp_path):
+    instance, root = app
+    project = _open_empty_project(instance, tmp_path)
+    from PIL import Image
+
+    Image.new("RGB", (1920, 1080), "red").save(project.media_dir() / "pic.jpg", "JPEG")
+    instance._editor._on_choose_image("pic.jpg")
+    assert instance._editor._picture_row._current_item() is not None
 
 
 # -- User Story 6: transport states (Spec 5, FR-001/002/011) --------------------

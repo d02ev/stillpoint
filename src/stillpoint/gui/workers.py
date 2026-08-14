@@ -2,16 +2,20 @@
 completion through thread-safe queues.
 
 ``RenderWorker`` drives ffmpeg for an export; ``DownloadWorker`` drives a
-YouTube audio download. The GUI polls either with ``root.after`` and never
-blocks the window (Constitution II).
+YouTube audio download; ``SearchWorker`` / ``ImageDownloadWorker`` /
+``PreviewImageWorker`` drive the Pexels image panel. The GUI polls any of them
+with ``root.after`` and never blocks the window (Constitution II).
 """
 
 from __future__ import annotations
 
+import io
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from PIL import Image
 
 from .. import download, import_audio, model as model_mod, render
 
@@ -180,3 +184,172 @@ class ImportWorker:
         except Exception as exc:  # noqa: BLE001 - never surface a traceback
             kind, message = import_audio.classify_import_error(exc)
             self._queue.put(import_audio.ImportEvent("error", 0.0, message))
+
+
+@dataclass
+class SearchEvent:
+    """One image-search event the panel renders verbatim.
+
+    ``state`` is ``searching | done | empty | error``; ``photos`` carries the
+    results on ``done``; ``thumbs`` maps each photo id to its decoded RGB
+    thumbnail (built in the worker, never the UI thread); ``detail`` is the
+    canonical plain-language line for ``searching``/``empty``/``error``.
+    """
+
+    state: str
+    photos: list = field(default_factory=list)
+    thumbs: dict = field(default_factory=dict)
+    detail: str = ""
+
+
+@dataclass
+class ImageDownloadEvent:
+    """One image-download event: ``downloading | done | error``.
+
+    ``value`` is the stored filename on ``done``; ``detail`` is the canonical
+    plain-language line.
+    """
+
+    state: str
+    value: str = ""
+    detail: str = ""
+
+
+@dataclass
+class PreviewEvent:
+    """One preview event: ``loading | shown | error``.
+
+    ``value`` is the RGB PIL image on ``shown``; ``detail`` is the canonical
+    plain-language line.
+    """
+
+    state: str
+    value: object = None
+    detail: str = ""
+
+
+class SearchWorker:
+    """Runs pexels.search_images plus thumbnail decoding in a daemon thread.
+
+    The search fetch and every thumbnail fetch/decode happen here, never on the
+    UI thread (Constitution II). Poll ``poll()`` from the UI with ``root.after``.
+    Only canonical messages ever reach the panel.
+    """
+
+    def __init__(self, query: str, key=None, *, fetch=None, thumb_fetch=None):
+        self._queue: "queue.Queue[SearchEvent]" = queue.Queue()
+        self._query = query
+        self._key = key
+        self._fetch = fetch
+        self._thumb_fetch = thumb_fetch
+        self._thread = threading.Thread(target=self._run, name="stillpoint-image-search", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def poll(self) -> SearchEvent | None:
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        from .. import pexels
+
+        try:
+            self._queue.put(SearchEvent("searching", detail=pexels.SEARCHING_MESSAGE))
+            photos = pexels.search_images(self._query, key=self._key, fetch=self._fetch)
+            if not photos:
+                self._queue.put(SearchEvent("empty", detail=pexels.NO_RESULTS_MESSAGE))
+                return
+            fetch_bytes = self._thumb_fetch or pexels.fetch_image_bytes
+            thumbs: dict[int, Image.Image] = {}
+            for photo in photos:
+                image = _decode_image(fetch_bytes, pexels.thumbnail_url(photo))
+                if image is not None:
+                    thumbs[photo.id] = image
+            if not thumbs:
+                self._queue.put(SearchEvent("empty", detail=pexels.NO_RESULTS_MESSAGE))
+                return
+            self._queue.put(SearchEvent("done", photos=photos, thumbs=thumbs))
+        except pexels.PexelsError as exc:
+            self._queue.put(SearchEvent("error", detail=exc.message))
+        except Exception:  # noqa: BLE001 - never surface a traceback
+            self._queue.put(SearchEvent("error", detail=pexels.SEARCH_ERROR_OTHER))
+
+
+class ImageDownloadWorker:
+    """Runs pexels.download_photo in a daemon thread; poll poll() from the UI."""
+
+    def __init__(self, project: model_mod.Project, photo, key=None, *, fetch=None):
+        self._queue: "queue.Queue[ImageDownloadEvent]" = queue.Queue()
+        self._project = project
+        self._photo = photo
+        self._key = key
+        self._fetch = fetch
+        self._thread = threading.Thread(target=self._run, name="stillpoint-image-download", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def poll(self) -> ImageDownloadEvent | None:
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        from .. import pexels
+
+        try:
+            self._queue.put(ImageDownloadEvent("downloading", detail=pexels.DOWNLOADING_MESSAGE))
+            filename = pexels.download_photo(self._project, self._photo, key=self._key, fetch=self._fetch)
+            self._queue.put(ImageDownloadEvent("done", value=filename, detail=pexels.DOWNLOAD_DONE_MESSAGE))
+        except pexels.PexelsError as exc:
+            self._queue.put(ImageDownloadEvent("error", detail=exc.message))
+        except Exception:  # noqa: BLE001 - never surface a traceback
+            self._queue.put(ImageDownloadEvent("error", detail=pexels.DOWNLOAD_ERROR_OTHER))
+
+
+class PreviewImageWorker:
+    """Runs pexels.preview_photo in a daemon thread; never writes to disk."""
+
+    def __init__(self, photo, *, fetch=None):
+        self._queue: "queue.Queue[PreviewEvent]" = queue.Queue()
+        self._photo = photo
+        self._fetch = fetch
+        self._thread = threading.Thread(target=self._run, name="stillpoint-image-preview", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def poll(self) -> PreviewEvent | None:
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        from .. import pexels
+
+        try:
+            self._queue.put(PreviewEvent("loading", detail=pexels.PREVIEW_LOADING_MESSAGE))
+            image = pexels.preview_photo(self._photo, fetch=self._fetch)
+            self._queue.put(PreviewEvent("shown", value=image))
+        except pexels.PexelsError as exc:
+            self._queue.put(PreviewEvent("error", detail=exc.message))
+        except Exception:  # noqa: BLE001 - never surface a traceback
+            self._queue.put(PreviewEvent("error", detail=pexels.PREVIEW_ERROR_MESSAGE))
+
+
+def _decode_image(fetch_bytes, url: str) -> Image.Image | None:
+    """Fetch ``url`` and decode it as an RGB image, or ``None`` on any failure."""
+    try:
+        data = fetch_bytes(url)
+    except Exception:  # noqa: BLE001 - a failed thumbnail is skipped, not fatal
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return img.convert("RGB")
+    except Exception:  # noqa: BLE001 - bytes were not a decodable picture
+        return None

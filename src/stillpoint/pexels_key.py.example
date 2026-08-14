@@ -1,0 +1,8 @@
+# Pexels API key — DO NOT COMMIT THE REAL VALUE.
+#
+# Copy this file to `pexels_key.py` on the build machine and paste the real
+# key there. `pexels_key.py` is gitignored, so the value never lands in the
+# public repository. It is baked into the shipped executable at build time
+# and is never shown in any UI string.
+
+PEXELS_API_KEY = ""
