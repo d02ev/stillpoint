@@ -174,13 +174,19 @@ def test_render_both_channels_matches_timeline(tmp_path):
         pytest.param({"volume": 0.5, "short": True}, {"volume": 0.9, "fade_in": 0.2}, id="both-short-music"),
         pytest.param({"volume": 0.6}, None, id="music-only"),
         pytest.param(None, {"volume": 0.4}, id="voice-only"),
+        pytest.param({"volume": 0.5, "echo": 0.3}, None, id="music-echo-only"),
+        pytest.param(None, {"volume": 0.6, "echo": 0.8, "fade_in": 0.1}, id="voice-echo-and-fade"),
+        pytest.param({"volume": 0.4, "echo": 0.7}, {"volume": 0.8, "echo": 0.2}, id="both-echo"),
+        pytest.param({"volume": 0.5, "echo": 1.0}, {"volume": 0.5, "echo": 0.0}, id="echo-extremes"),
     ],
 )
 def test_preview_and_export_same_mix_parity(tmp_path, music, voice):
     """The preview WAV and the exported mp4 audio are the same mix (FR-006/007).
 
-    Same channels, same balance, same timing, same length — because both are
-    built from ``mix.plan_audio``.
+    Same channels, same balance (volume, echo, fades), same timing, same length
+    — because both are built from ``mix.plan_audio``. Echo is part of the
+    shared chain, so what she hears with echo on is exactly what exports
+    (US4/FR-014; Scenario 4 covers states echo on/off, extremes, one or both).
     """
     proj = _project_with_images(tmp_path, count=2, duration=1.0)
     proj.movie.crossfade = 0.5

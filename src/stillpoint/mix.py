@@ -29,6 +29,18 @@ WAV_RATE = 44100
 WAV_CHANNELS = 2
 WAV_SAMPLE_BYTES = 2
 
+#: The echo's one reflection delay, fixed (ms) — a single echo, never a delay
+#: line (research Decision 2, Constitution VI).
+ECHO_DELAY_MS = 350
+#: Decay mapping constants: ``decay = clamp(echo * ECHO_DECAY_GAIN, 0.0,
+#: ECHO_DECAY_MAX)`` — rises monotonically to a gentle maximum (Decision 2).
+ECHO_DECAY_GAIN = 0.6
+ECHO_DECAY_MAX = 0.7
+
+
+def _echo_decay(echo: float) -> float:
+    return max(0.0, min(echo * ECHO_DECAY_GAIN, ECHO_DECAY_MAX))
+
 
 class MixError(RuntimeError):
     """A mix-bake failure that ``classify_playback_error`` can bucket."""
@@ -58,13 +70,24 @@ def timeline_duration(project) -> float:
 
 
 def _channel_chain(item, idx: int, total: float, label: str) -> str:
-    """One channel's filter chain: trim to the timeline, shape, pad, cut."""
+    """One channel's filter chain: trim to the timeline, shape, pad, cut.
+
+    Chain order: atrim → asetpts → volume → aecho (only when ``echo > 0``) →
+    afade-in → afade-out → apad → atrim(0:total). Echo is a single 350 ms
+    ``aecho`` reflection with ``in_gain=1.0`` so the dry signal — and her
+    stored balance — is never rescaled (Decision 2, FR-013); when ``echo == 0``
+    no stage is emitted and the chain is byte-for-byte the Spec 5 chain, so
+    turning echo off returns the channel to plain sound (FR-007).
+    """
     chain = (
         f"[{idx}:a]"
         f"atrim=start={item.in_point:.3f}:end={item.in_point + total:.3f},"
         f"asetpts=PTS-STARTPTS,"
         f"volume={item.volume:.3f}"
     )
+    if item.echo > 0:
+        decay = _echo_decay(item.echo)
+        chain += f",aecho=1.0:{decay:.3f}:{ECHO_DELAY_MS}:{decay:.3f}"
     if item.fade_in > 0:
         chain += f",afade=t=in:st=0:d={item.fade_in:.3f}"
     if item.fade_out > 0:
@@ -108,8 +131,8 @@ def mix_signature(project) -> tuple:
     """A stable, hashable signature of everything the mix depends on.
 
     For each recorded-and-readable channel: ``(role, filename, in_point,
-    volume, fade_in, fade_out)``, plus ``total``. Preview uses it to skip a
-    re-bake when nothing changed; any change in stored settings or channels
+    volume, echo, fade_in, fade_out)``, plus ``total``. Preview uses it to skip
+    a re-bake when nothing changed; any change in stored settings or channels
     makes it differ, so the next play-from-stop re-bakes with the new balance
     (FR-005, FR-015).
     """
@@ -120,7 +143,7 @@ def mix_signature(project) -> tuple:
             continue
         if not project.media_file(item).is_file():
             continue
-        channels.append((role, item.filename, item.in_point, item.volume, item.fade_in, item.fade_out))
+        channels.append((role, item.filename, item.in_point, item.volume, item.echo, item.fade_in, item.fade_out))
     return tuple(channels) + (timeline_duration(project),)
 
 

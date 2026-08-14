@@ -123,6 +123,129 @@ def test_plan_total_matches_timeline(tmp_path):
     assert plan.total == pytest.approx(1.5)
 
 
+# -- T010/T011 (006): echo in the shared chain and signature ----------------------
+
+
+def _echo_decay(chain: str) -> float:
+    """Extract the aecho decay from a chain fragment ('' when none)."""
+    import re
+
+    match = re.search(r"aecho=1\.0:([\d.]+):350:\1", chain)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def test_plan_echo_off_is_byte_for_byte_the_spec5_chain(tmp_path):
+    """Echo off (0.0) emits no aecho stage — the chain is the Spec 5 chain."""
+    proj = _project(tmp_path)
+    _attach_tone(proj, tmp_path, "music", in_point=0.3, volume=0.6, fade_in=0.2, fade_out=0.4)
+    plan = mix.plan_audio(proj, total=5.0)
+    chain = plan.chains[0]
+    assert "aecho" not in chain
+    assert chain == (
+        "[0:a]"
+        "atrim=start=0.300:end=5.300,"
+        "asetpts=PTS-STARTPTS,"
+        "volume=0.600,"
+        "afade=t=in:st=0:d=0.200,"
+        "afade=t=out:st=4.600:d=0.400,"
+        "apad,atrim=0:5.000[aout]"
+    )
+
+
+def test_plan_echo_toggle_is_byte_reversible(tmp_path):
+    """Scenario 3.1/3.2: turning echo Off returns the exact un-echoed chain, and
+    the same on-position reproduces the same chain — reversible, never reset."""
+    def chain_for(echo):
+        proj = _project(tmp_path)
+        _attach_tone(proj, tmp_path, "music", volume=0.5, echo=echo)
+        return mix.plan_audio(proj, total=5.0).chains[0]
+
+    assert chain_for(0.0) == chain_for(0.0)
+    assert chain_for(0.6) == chain_for(0.6)  # same position, same sound
+    assert chain_for(0.0) != chain_for(0.6)
+    assert "aecho" not in chain_for(0.0)
+
+
+def test_plan_echo_with_fade_exceeding_timeline(tmp_path):
+    """Scenario 6.4: a fade longer than the timeline never errors — the echo
+    stage and fades are still emitted in order; ffmpeg clips the fade to the
+    sound that is heard, identically in preview and export."""
+    proj = _project(tmp_path)
+    _attach_tone(proj, tmp_path, "music", volume=0.6, echo=0.9, fade_out=8.0)
+    plan = mix.plan_audio(proj, total=5.0)
+    chain = plan.chains[0]
+    assert chain.count("aecho") == 1
+    assert chain.index("volume=0.600") < chain.index("aecho") < chain.index("afade=t=out")
+    assert "apad,atrim=0:5.000" in chain
+
+
+def test_plan_echo_on_places_single_aecho_between_volume_and_fades(tmp_path):
+    """Echo on emits exactly one mapped aecho stage, between volume and fades."""
+    proj = _project(tmp_path)
+    _attach_tone(proj, tmp_path, "music", volume=0.5, echo=0.5, fade_in=0.2, fade_out=0.4)
+    plan = mix.plan_audio(proj, total=5.0)
+    chain = plan.chains[0]
+    decay = min(0.5 * 0.6, 0.7)  # clamp(0.5 * 0.6, 0.0, 0.7) == 0.3
+    assert chain.count("aecho") == 1
+    assert f"aecho=1.0:{decay:.3f}:350:{decay:.3f}" in chain
+    assert chain.index("volume=0.500") < chain.index("aecho") < chain.index("afade=t=in")
+
+
+def test_plan_echo_decay_rises_monotonically_and_caps(tmp_path):
+    """decay = clamp(echo * 0.6, 0.0, 0.7): monotone in echo, capped at 0.7."""
+    decays = []
+    for echo in (0.0, 0.1, 0.5, 0.9, 1.0, 1.5, 5.0):
+        proj = _project(tmp_path)
+        _attach_tone(proj, tmp_path, "music", volume=1.0, echo=echo)
+        plan = mix.plan_audio(proj, total=5.0)
+        decays.append(_echo_decay(plan.chains[0]))
+    assert decays[0] is None  # echo off → no filter
+    values = [d for d in decays if d is not None]
+    assert values == sorted(values)  # monotonically rising
+    assert all(v <= 0.7 for v in values)
+    assert max(values) == pytest.approx(0.7)
+
+
+def test_plan_echo_on_voice_leaves_music_plain(tmp_path):
+    """Per-channel independence (FR-008): echo on voice never touches music."""
+    proj = _project(tmp_path)
+    _attach_tone(proj, tmp_path, "music", volume=0.5)
+    _attach_tone(proj, tmp_path, "voice", volume=0.5, echo=0.8)
+    plan = mix.plan_audio(proj, total=5.0)
+    music_chain, voice_chain = plan.chains[0], plan.chains[1]
+    assert "aecho" not in music_chain
+    assert "aecho" in voice_chain
+
+
+def test_signature_includes_echo(tmp_path):
+    """Any echo change makes the signature differ, so the next play re-bakes."""
+    proj = _project(tmp_path)
+    _attach_tone(proj, tmp_path, "music", volume=0.5, echo=0.3)
+    before = mix.mix_signature(proj)
+    proj.movie.audio.echo = 0.7
+    proj.save()
+    assert mix.mix_signature(proj) != before
+
+
+def test_mix_planning_is_pure_data_no_processes_started(tmp_path, monkeypatch):
+    """US5/FRO015-FR016 purity guard: building the plan and the signature is pure
+    data work — a runaway process would call subprocess (ffmpeg), and shaping
+    must only ever run inside the bounded render action, never in the background
+    (Constitution II)."""
+    def _forbid(*_args, **_kwargs):
+        raise AssertionError("planning must not start a process")
+
+    proj = _project(tmp_path)
+    _attach_tone(proj, tmp_path, "music", volume=0.5, echo=0.4, fade_in=0.2, fade_out=0.3)
+    monkeypatch.setattr(mix.subprocess, "run", _forbid)
+    plan = mix.plan_audio(proj, total=5.0)  # pure: never launches ffmpeg
+    assert plan.total == 5.0
+    sig = mix.mix_signature(proj)  # pure: never touches the disk beyond reads
+    assert ("music", "music.wav", 0.0, 0.5, 0.4, 0.2, 0.3) in sig
+
+
 # -- mix_signature ------------------------------------------------------------
 
 

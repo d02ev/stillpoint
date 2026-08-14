@@ -59,7 +59,7 @@ def test_volume_edits_write_only_existing_fields(tmp_path):
     raw = json.loads((tmp_path / "proj" / "project.json").read_text())
     assert set(raw["movie"].keys()) == {"duration", "ratio", "crossfade", "audio", "voice"}
     assert set(raw["movie"]["audio"].keys()) == {
-        "kind", "filename", "duration", "in_point", "volume", "fade_in", "fade_out"
+        "kind", "filename", "duration", "in_point", "volume", "echo", "fade_in", "fade_out"
     }
     assert raw["movie"]["audio"]["volume"] == 0.4
 
@@ -75,6 +75,50 @@ def test_roundtrip_preserves_content(tmp_path):
     assert loaded.movie.duration == 300
     assert loaded.images[0].filename == "a.jpg"
     assert loaded.directory == tmp_path / "proj"
+
+
+def test_echo_serializes_and_round_trips(tmp_path):
+    """T016 / FR-011/FR-012: the one new field (echo) round-trips through
+    project.json — a saved value reappears exactly where she left it."""
+    project = model.new_project("Echo", tmp_path / "proj", "t0")
+    project.movie.audio = model.MediaItem(kind="audio", filename="a.mp3", echo=0.7)
+    project.movie.voice = model.MediaItem(kind="audio", filename="v.wav", echo=0.0)
+    project.save()
+
+    loaded = model.Project.load(tmp_path / "proj")
+    assert loaded.movie.audio.echo == pytest.approx(0.7)
+    assert loaded.movie.voice.echo == 0.0
+    assert model.MediaItem.to_dict(loaded.movie.audio)["echo"] == 0.7
+
+
+def test_pre_006_project_opens_with_echo_off(tmp_path):
+    """T016 / FR-012: a project saved before this feature (audio items with no
+    ``echo`` field) opens unchanged with echo off — defaults, never an error."""
+    proj_dir = tmp_path / "old"
+    proj_dir.mkdir()
+    (proj_dir / "media").mkdir()
+    (proj_dir / "project.json").write_text(json.dumps({
+        "version": 1,
+        "title": "Old",
+        "created": "t0",
+        "ratio": "16:9",
+        "imageDuration": 5.0,
+        "movie": {
+            "duration": 10.0,
+            "ratio": "16:9",
+            "crossfade": 0.0,
+            "audio": {
+                "kind": "audio", "filename": "song.wav", "duration": 5.0,
+                "in_point": 0.0, "volume": 1.0, "fade_in": 0.0, "fade_out": 0.0,
+            },
+            "voice": None,
+        },
+        "images": [],
+    }))
+    project = model.Project.load(proj_dir)
+    assert project.movie.audio is not None
+    assert project.movie.audio.echo == 0.0  # default: every modulation off
+    assert project.movie.audio.volume == 1.0  # stored values untouched
 
 
 def test_validate_rejects_bad_title(tmp_path):

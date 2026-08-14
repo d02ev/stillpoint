@@ -205,8 +205,87 @@ def test_set_channel_volume_adds_no_schema_fields(tmp_path):
     data = model_mod.Project.load(tmp_path / "proj").to_dict()
     movie = data["movie"]
     assert set(movie.keys()) == {"duration", "ratio", "crossfade", "audio", "voice"}
-    assert set(movie["audio"].keys()) == {"kind", "filename", "duration", "in_point", "volume", "fade_in", "fade_out"}
+    assert set(movie["audio"].keys()) == {"kind", "filename", "duration", "in_point", "volume", "echo", "fade_in", "fade_out"}
     assert set(movie["voice"].keys()) == set(movie["audio"].keys())
+
+
+# -- Project.set_channel_setting (006, US3: FR-004/010/011, Decision 5) ----------
+
+def test_set_channel_setting_round_trips_every_setting(tmp_path):
+    project = model_mod.new_project("Set", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.movie.voice = model_mod.MediaItem(kind="audio", filename="v.wav")
+    project.set_channel_setting("music", "volume", 0.6)
+    project.set_channel_setting("music", "echo", 0.4)
+    project.set_channel_setting("music", "fade_in", 2.0)
+    project.set_channel_setting("voice", "fade_out", 3.0)
+    assert project.movie.audio.volume == 0.6
+    assert project.movie.audio.echo == 0.4
+    assert project.movie.audio.fade_in == 2.0
+    assert project.movie.voice.fade_out == 3.0
+    reloaded = model_mod.Project.load(tmp_path / "proj")
+    assert reloaded.movie.audio.echo == 0.4
+    assert reloaded.movie.voice.fade_out == 3.0
+
+
+def test_set_channel_setting_clamps_ranges(tmp_path):
+    project = model_mod.new_project("Set", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.set_channel_setting("music", "volume", 1.7)
+    assert project.movie.audio.volume == 1.0
+    project.set_channel_setting("music", "volume", -0.2)
+    assert project.movie.audio.volume == 0.0
+    project.set_channel_setting("music", "echo", 2.0)
+    assert project.movie.audio.echo == 1.0
+    project.set_channel_setting("music", "echo", -1.0)
+    assert project.movie.audio.echo == 0.0
+    project.set_channel_setting("music", "fade_in", 99.0)
+    assert project.movie.audio.fade_in == model_mod.FADE_MAX_SECONDS
+    project.set_channel_setting("music", "fade_in", -5.0)
+    assert project.movie.audio.fade_in == 0.0
+
+
+def test_set_channel_setting_unknown_setting_raises(tmp_path):
+    project = model_mod.new_project("Set", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    with pytest.raises(ValueError):
+        project.set_channel_setting("music", "reverb", 0.5)
+
+
+def test_set_channel_setting_unknown_role_raises(tmp_path):
+    project = model_mod.new_project("Set", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    with pytest.raises(ValueError):
+        project.set_channel_setting("banjo", "volume", 0.5)
+
+
+def test_set_channel_setting_unrecorded_channel_raises(tmp_path):
+    project = model_mod.new_project("Set", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    with pytest.raises(ValueError):
+        project.set_channel_setting("voice", "echo", 0.5)
+
+
+def test_set_channel_setting_never_writes_media(tmp_path):
+    """FR-010: shaping writes only project.json — the media folder is untouched."""
+    project = model_mod.new_project("Set", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    (project.media_dir() / "a.mp3").write_bytes(b"\x00" * 8)
+    before = (project.media_dir() / "a.mp3").read_bytes()
+    for setting, value in (("volume", 0.3), ("echo", 0.8), ("fade_in", 2.0), ("fade_out", 2.0)):
+        project.set_channel_setting("music", setting, value)
+    assert (project.media_dir() / "a.mp3").read_bytes() == before
+    assert sorted(p.name for p in project.media_dir().iterdir()) == ["a.mp3"]
+
+
+def test_set_channel_volume_alias_still_works(tmp_path):
+    """Decision 5: the delivered one-line alias stays green."""
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.set_channel_volume("music", 0.55)
+    assert project.movie.audio.volume == pytest.approx(0.55)
+    reloaded = model_mod.Project.load(tmp_path / "proj")
+    assert reloaded.movie.audio.volume == pytest.approx(0.55)
 
 
 # -- icon generation ---------------------------------------------------------

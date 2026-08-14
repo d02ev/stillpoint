@@ -275,6 +275,42 @@ def test_mix_end_returns_control_to_play_and_next_play_is_from_top(
 # -- preparing is a visible transient, never stuck -------------------------------
 
 
+def test_shaped_mix_bakes_plays_and_mid_session_change_rebakes_once(
+    app, tmp_path, fake_session, fake_preview_worker
+):
+    """FR-015: a shaped mix (volume/echo/fades) bakes and plays; a mid-session
+    setting change re-bakes through the debounced/coalesced path — a drag never
+    stacks ffmpeg bakes (Constitution II)."""
+    instance, root = app
+    project = _open_with_music(instance, tmp_path)
+    (project.media_dir() / "song.mp3").write_bytes(b"x")  # so the signature hears it
+    project.movie.audio.volume = 0.7
+    project.movie.audio.echo = 0.4
+    project.movie.audio.fade_in = 0.2
+    project.movie.audio.fade_out = 0.3
+    project.save()
+    editor = instance._editor
+
+    editor._on_transport()  # play → bake the shaped mix → play
+    assert len(fake_preview_worker.instances) == 1
+    session = _session(editor)
+    assert session.state == PlaybackSession.PLAYING
+
+    session.sink._pos_seconds = 8.0
+    editor._on_setting("music", "echo", 0.9)  # a mid-session shaping change
+    assert project.movie.audio.echo == pytest.approx(0.9)
+    assert session.state == PlaybackSession.PLAYING  # old mix keeps playing
+    assert len(fake_preview_worker.instances) == 1  # debounced: no bake yet
+    assert editor._rebake_id is not None  # a settled re-bake is pending
+
+    editor._run_rebake()  # the debounce fires after the drag settles
+
+    assert len(fake_preview_worker.instances) == 2  # exactly one re-bake
+    assert session.state == PlaybackSession.PLAYING
+    assert session.sink.calls[-2] == ("open", str(fake_preview_worker.instances[-1].out_path), 8.0)
+    assert session.sink.calls[-1] == ("play",)
+
+
 def test_preparing_state_during_bake(app, tmp_path, fake_session, fake_preview_worker):
     instance, root = app
     _open_with_music(instance, tmp_path)

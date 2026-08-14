@@ -12,6 +12,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from .. import theme
+from ..model import FADE_MAX_SECONDS
 
 PANEL_IMAGE = "image"
 PANEL_DOWNLOAD = "download"
@@ -23,9 +24,16 @@ PANEL_TITLES = {
     PANEL_ADJUSTMENT: "Adjust sound",
 }
 
-# Canonical everyday-language string (Constitution I, preview-playback-ui.md).
-EMPTY_AIM_NOTE = "Add music or your voice first to adjust its sound."
+# Canonical everyday-language strings (Constitution I, shaping-panel-ui.md).
+EMPTY_AIM_NOTE = "Add music or your voice first to shape its sound."
+OFF_LABEL = "Off"
 VOLUME_LABEL = "Volume"
+ECHO_LABEL = "Echo"
+FADE_IN_LABEL = "Fade in"
+FADE_OUT_LABEL = "Fade out"
+
+#: Maximum echo strength (0..1) — the slider's top stop (research Decision 4).
+ECHO_MAX = 1.0
 
 
 class PanelManager:
@@ -87,19 +95,20 @@ class ImagePanel(_PanelFrame):
 
 
 class AdjustmentPanel(_PanelFrame):
-    """The per-channel sound controls (Spec 5): one Volume slider per loaded
-    channel, aimed at the clicked channel. Empty aim shows the plain
-    "Add music or your voice first…" line instead of a slider (FR-014,
-    Constitution VI). The editor owns model writes — this widget only reports
-    ``on_volume(role, value_in_0_1)`` and never touches the project itself.
+    """The per-channel sound controls (006): four labeled sliders — Volume,
+    Echo, Fade in, Fade out — for the aimed loaded channel, each minimum stop
+    labeled "Off". Empty aim shows the plain "Add music or your voice first to
+    shape its sound." line instead of any control (FR-003). The editor owns
+    model writes — this widget only reports ``on_setting(role, setting,
+    value)`` and never touches the project itself.
     """
 
-    def __init__(self, master, on_volume=None, **kwargs):
+    def __init__(self, master, on_setting=None, **kwargs):
         super().__init__(master, PANEL_TITLES[PANEL_ADJUSTMENT], **kwargs)
-        self._on_volume = on_volume
+        self._on_setting = on_setting
         self._project = None
         self._aim = "music"
-        self._scale: tk.Scale | None = None
+        self._scales: dict[str, tk.Scale] = {}
         self._aim_label = tk.Label(
             self._body, text="", bg=theme.Palette.panel, fg=theme.Palette.accent,
             font=(theme.FONT_FAMILY, theme.FONT_SIZE, "bold"))
@@ -107,6 +116,11 @@ class AdjustmentPanel(_PanelFrame):
         self._sound_body = tk.Frame(self._body, bg=theme.Palette.panel)
         self._sound_body.pack(fill="both", expand=True)
         self._set_sound_section()
+
+    @property
+    def _scale(self) -> tk.Scale | None:
+        """Compatibility alias: the Volume slider (delivered tests)."""
+        return self._scales.get("volume")
 
     def set_project(self, project) -> None:
         self._project = project
@@ -129,10 +143,11 @@ class AdjustmentPanel(_PanelFrame):
         return None
 
     def _set_sound_section(self) -> None:
-        """Rebuild the aimed channel's controls (never two sliders, FR-014)."""
+        """Rebuild the aimed channel's controls — four sliders or the empty
+        line, never both and never two channels (FR-003, FR-004)."""
         for child in self._sound_body.winfo_children():
             child.destroy()
-        self._scale = None
+        self._scales = {}
         item = self._channel_item()
         if item is None:
             tk.Label(self._sound_body, text=EMPTY_AIM_NOTE, bg=theme.Palette.panel,
@@ -140,20 +155,55 @@ class AdjustmentPanel(_PanelFrame):
                      justify="left", wraplength=self.width - theme.PAD * 2
                      ).pack(anchor="w", pady=theme.PAD_SMALL)
             return
-        tk.Label(self._sound_body, text=VOLUME_LABEL, bg=theme.Palette.panel,
+        self._add_setting_row("volume", VOLUME_LABEL, item.volume)
+        self._add_setting_row("echo", ECHO_LABEL, item.echo)
+        self._add_setting_row("fade_in", FADE_IN_LABEL, item.fade_in)
+        self._add_setting_row("fade_out", FADE_OUT_LABEL, item.fade_out)
+
+    def _add_setting_row(self, setting: str, label_text: str, value: float) -> None:
+        """One labeled slider whose leftmost stop reads "Off" (FR-009)."""
+        frame = tk.Frame(self._sound_body, bg=theme.Palette.panel)
+        frame.pack(fill="x", pady=(theme.PAD_SMALL, 0))
+        tk.Label(frame, text=label_text, bg=theme.Palette.panel,
                  fg=theme.Palette.text, font=(theme.FONT_FAMILY, theme.FONT_SIZE)
-                 ).pack(anchor="w", pady=(theme.PAD_SMALL, 0))
+                 ).pack(anchor="w")
+        scale_row = tk.Frame(frame, bg=theme.Palette.panel)
+        scale_row.pack(fill="x")
+        tk.Label(scale_row, text=OFF_LABEL, bg=theme.Palette.panel,
+                 fg=theme.Palette.text_dim, font=(theme.FONT_FAMILY, theme.FONT_SIZE)
+                 ).pack(side="left", padx=(0, 2))
         scale = tk.Scale(
-            self._sound_body, from_=0, to=100, orient="horizontal",
+            scale_row, from_=0, to=100, orient="horizontal",
             showvalue=False, bg=theme.Palette.panel, fg=theme.Palette.text,
             highlightthickness=0, troughcolor=theme.Palette.panel_light,
             activebackground=theme.Palette.accent,
         )
-        scale.set(int(round(item.volume * 100)))
-        scale.configure(command=self._on_scale)
-        scale.pack(fill="x", pady=theme.PAD_SMALL)
-        self._scale = scale
+        scale.set(self._slider_position(setting, value))
+        scale.configure(command=lambda v, s=setting: self._on_slider(s, v))
+        scale.pack(side="left", fill="x", expand=True)
+        self._scales[setting] = scale
+
+    @staticmethod
+    def _slider_position(setting: str, value: float) -> int:
+        """Map a stored value to the 0..100 slider position."""
+        if setting in ("volume", "echo"):
+            return int(round(value * 100))
+        return int(round(value / FADE_MAX_SECONDS * 100))
+
+    @staticmethod
+    def _slider_value(setting: str, value: str) -> float:
+        """Map a slider position string to the persisted value — 0..1 for
+        volume/echo, seconds for fades."""
+        position = float(value)
+        if setting in ("volume", "echo"):
+            return position / 100.0
+        return position / 100.0 * FADE_MAX_SECONDS
+
+    def _on_slider(self, setting: str, value: str) -> None:
+        """A slider move: report on_setting(role, setting, value) — report-only."""
+        if self._on_setting is not None:
+            self._on_setting(self._aim, setting, self._slider_value(setting, value))
 
     def _on_scale(self, value: str) -> None:
-        if self._on_volume is not None:
-            self._on_volume(self._aim, float(value) / 100.0)
+        """Compatibility alias: a Volume move reports ``volume`` (delivered tests)."""
+        self._on_slider("volume", value)

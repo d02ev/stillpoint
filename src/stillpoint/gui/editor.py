@@ -17,7 +17,7 @@ panel host, the two channel rows, and the transport, and wires their click
 routes. Layout and visibility rules delegate to the small widgets and the pure
 `PanelManager`. Playback runs a real `PlaybackSession` (worker-thread bake,
 streaming sink): play/pause/resume/Start over, end-of-mix returns the control
-to play, and volume-slider events are written through the project's atomic
+to play, and shaping-slider events are written through the project's atomic
 save — their live re-bake is debounced and coalesced so a drag never stacks
 ffmpeg bakes. Every still-unimplemented interaction fails softly (FR-019).
 """
@@ -48,7 +48,7 @@ _EXPORT_NOTICE = "Exporting isn't ready yet. You'll be able to save your video h
 _IMPORT_POLL_MS = 100
 _PREVIEW_POLL_MS = 100
 _PLAYBACK_POLL_MS = 100
-_VOLUME_DEBOUNCE_MS = 200
+_REBAKE_DEBOUNCE_MS = 200
 
 
 class EditorScreen(tk.Frame):
@@ -63,7 +63,7 @@ class EditorScreen(tk.Frame):
         self._preview_worker: PreviewWorker | None = None
         self._playback_poll_id: str | None = None
         self._preview_poll_id: str | None = None
-        self._volume_rebake_id: str | None = None
+        self._rebake_id: str | None = None
 
         self._build_top_bar()
         self._build_body()
@@ -124,7 +124,7 @@ class EditorScreen(tk.Frame):
         self._panel_widgets = {
             panels.PANEL_IMAGE: ImagePanel(self._panel_host),
             panels.PANEL_DOWNLOAD: DownloadPanel(self._panel_host, on_import=self._on_import_track),
-            panels.PANEL_ADJUSTMENT: AdjustmentPanel(self._panel_host, on_volume=self._on_volume),
+            panels.PANEL_ADJUSTMENT: AdjustmentPanel(self._panel_host, on_setting=self._on_setting),
         }
 
     # -- project wiring ----------------------------------------------------
@@ -176,7 +176,7 @@ class EditorScreen(tk.Frame):
 
     def _on_transport(self) -> None:
         """The play/pause press: pause when playing, otherwise play/resume/bake."""
-        self._cancel_volume_rebake()
+        self._cancel_rebake()
         if self._transport.state == transport_mod.PAUSE and self._playback is not None:
             self._playback.pause()
             self._cancel_playback_poll()
@@ -192,7 +192,7 @@ class EditorScreen(tk.Frame):
         """
         if self._playback is None:
             return
-        self._cancel_volume_rebake()
+        self._cancel_rebake()
         try:
             self._playback.start_over()
         except Exception as exc:  # noqa: BLE001 - surfaced as a plain dialog
@@ -268,7 +268,7 @@ class EditorScreen(tk.Frame):
                 # A setting changed while this bake ran; apply it once the
                 # knob settles so bakes never overlap and the change is never
                 # lost (FR-015, SC-003, Constitution II).
-                self._schedule_volume_rebake()
+                self._schedule_rebake()
                 return
             self._schedule_playback_poll()
         elif status.state == "error":
@@ -330,7 +330,7 @@ class EditorScreen(tk.Frame):
         untouched.
         """
         self._cancel_playback_poll()
-        self._cancel_volume_rebake()
+        self._cancel_rebake()
         if self._preview_poll_id is not None:
             try:
                 self.after_cancel(self._preview_poll_id)
@@ -491,50 +491,50 @@ class EditorScreen(tk.Frame):
             self._panels.open(panels.PANEL_ADJUSTMENT)
         self._apply_panel_visibility()
 
-    def _on_volume(self, role: str, value: float) -> None:
-        """A Volume slider change: persist the balance, apply it live, gently.
+    def _on_setting(self, role: str, setting: str, value: float) -> None:
+        """A shaping change: persist the edit-state, apply it live, gently.
 
         The composer owns model writes (the 003/004 separation of concerns).
         The persisted write is immediate and atomic on every tick (the R2
         invariant); the live re-bake is debounced and coalesced so a drag
         never starts one ffmpeg bake per tick — the old mix keeps playing
         until the new one is ready, then playback continues from the current
-        spot with the new balance (FR-015, SC-003, Constitution II).
+        spot with the new shaping (FR-015, SC-003, Constitution II).
         """
         project = self.app.project
         if project is None:
             return
         try:
-            project.set_channel_volume(role, value)
+            project.set_channel_setting(role, setting, value)
         except ValueError:
             pass  # aimed channel vanished mid-drag — a no-op, never a crash
         if self._playback is None:
             return
-        self._schedule_volume_rebake()
+        self._schedule_rebake()
 
-    def _schedule_volume_rebake(self) -> None:
-        """Debounce + coalesce a live re-bake after a volume change.
+    def _schedule_rebake(self) -> None:
+        """Debounce + coalesce a live re-bake after any shaping change.
 
-        The bake starts ``_VOLUME_DEBOUNCE_MS`` after the last change, so a
+        The bake starts ``_REBAKE_DEBOUNCE_MS`` after the last change, so a
         drag settles to its final value before the whole-mix re-bake runs and
-        the old mix keeps playing meanwhile. ``_run_volume_rebake`` refuses to
+        the old mix keeps playing meanwhile. ``_run_rebake`` refuses to
         start a second bake while one is in flight (two ffmpeg bakes never
         contend, Constitution II); a change made during a bake is then seen by
         ``needs_rebake`` when it completes and re-baked once the knob settles.
         """
-        self._cancel_volume_rebake()
+        self._cancel_rebake()
         if self._playback is None or self._playback.state not in (
             playback_mod.PLAYING, playback_mod.PAUSED, playback_mod.FINISHED,
         ):
             return
         try:
-            self._volume_rebake_id = self.after(_VOLUME_DEBOUNCE_MS, self._run_volume_rebake)
+            self._rebake_id = self.after(_REBAKE_DEBOUNCE_MS, self._run_rebake)
         except tk.TclError:
-            self._volume_rebake_id = None
+            self._rebake_id = None
 
-    def _run_volume_rebake(self) -> None:
-        """The settled volume change: re-bake and keep her spot if needed."""
-        self._volume_rebake_id = None
+    def _run_rebake(self) -> None:
+        """The settled shaping change: re-bake and keep her spot if needed."""
+        self._rebake_id = None
         project = self.app.project
         if self._playback is None or project is None:
             return
@@ -548,13 +548,13 @@ class EditorScreen(tk.Frame):
         if action == "bake":
             self._start_bake(project)
 
-    def _cancel_volume_rebake(self) -> None:
-        if self._volume_rebake_id is not None:
+    def _cancel_rebake(self) -> None:
+        if self._rebake_id is not None:
             try:
-                self.after_cancel(self._volume_rebake_id)
+                self.after_cancel(self._rebake_id)
             except tk.TclError:
                 pass
-            self._volume_rebake_id = None
+            self._rebake_id = None
 
     def _on_export(self) -> None:
         dialogs.info("Stillpoint", _EXPORT_NOTICE, parent=self)

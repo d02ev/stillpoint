@@ -29,6 +29,10 @@ RATIO_CHOICES = (RATIO_WIDE, RATIO_SQUARE, RATIO_VERTICAL)
 
 FPS = 30
 
+#: Longest fade a channel may use (seconds) — the shared cap for the slider
+#: and the model clamp (research Decision 3).
+FADE_MAX_SECONDS = 10.0
+
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
@@ -51,6 +55,7 @@ class MediaItem:
     duration: float = 5.0  # seconds; audio can be trimmed to a portion
     in_point: float = 0.0  # for audio: offset into the source clip (s)
     volume: float = 1.0  # 0..1
+    echo: float = 0.0  # echo strength, 0..1; 0.0 = off (006; the one new field)
     fade_in: float = 0.0  # seconds
     fade_out: float = 0.0  # seconds
 
@@ -61,13 +66,14 @@ class MediaItem:
             "duration": round(self.duration, 3),
             "in_point": round(self.in_point, 3),
             "volume": round(self.volume, 3),
+            "echo": round(self.echo, 3),
             "fade_in": round(self.fade_in, 3),
             "fade_out": round(self.fade_out, 3),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "MediaItem":
-        known = {"kind", "filename", "duration", "in_point", "volume", "fade_in", "fade_out"}
+        known = {"kind", "filename", "duration", "in_point", "volume", "echo", "fade_in", "fade_out"}
         if not isinstance(data, dict):
             raise ValueError("media item is not an object")
         unknown = set(data) - known
@@ -82,6 +88,7 @@ class MediaItem:
             duration=float(data.get("duration", 5.0)),
             in_point=float(data.get("in_point", 0.0)),
             volume=float(data.get("volume", 1.0)),
+            echo=float(data.get("echo", 0.0)),
             fade_in=float(data.get("fade_in", 0.0)),
             fade_out=float(data.get("fade_out", 0.0)),
         )
@@ -285,21 +292,33 @@ class Project:
         self.save()
         return item
 
-    def set_channel_volume(self, role: str, volume: float) -> None:
-        """Set a channel's balance in the existing ``volume`` field (FR-014/015).
+    def set_channel_setting(self, role: str, setting: str, value: float) -> None:
+        """Set a channel's edit-state scalar and persist it atomically.
 
-        ``role`` ∈ ``"music"`` | ``"voice"``. Writes ``movie.<role>.volume``
-        clamped to 0..1 and persists immediately through the existing atomic
-        :meth:`save` (reconciliation R2, Constitution IV) — no new persisted
-        fields (FR-013, Constitution VIII). Raises ``ValueError`` for an unknown
-        role or an unrecorded channel. The change is heard on the next play-from
-        stop (signature-driven re-bake) and is identical in preview and export.
+        ``role`` ∈ ``"music"`` | ``"voice"``; ``setting`` ∈ ``{"volume",
+        "echo", "fade_in", "fade_out"}``. Clamps before writing: ``volume``/
+        ``echo`` → 0..1; ``fade_in``/``fade_out`` → 0..``FADE_MAX_SECONDS``.
+        Writes ``movie.<role>.<setting>`` and saves immediately and atomically
+        via :meth:`save` (reconciliation R2, Constitution IV) — the source
+        audio file is never touched (FR-010). Raises ``ValueError`` for an
+        unknown role/setting or an unrecorded channel. The change is heard on
+        the next play-from-stop (signature-driven re-bake) and is identical in
+        preview and export.
         """
         item = {"music": self.movie.audio, "voice": self.movie.voice}.get(role)
         if item is None:
             raise ValueError(f"no {role} channel is recorded")
-        item.volume = _clamp(volume, 0.0, 1.0)
+        if setting not in ("volume", "echo", "fade_in", "fade_out"):
+            raise ValueError(f"unknown channel setting: {setting!r}")
+        if setting in ("volume", "echo"):
+            setattr(item, setting, _clamp(value, 0.0, 1.0))
+        else:
+            setattr(item, setting, _clamp(value, 0.0, FADE_MAX_SECONDS))
         self.save()
+
+    def set_channel_volume(self, role: str, volume: float) -> None:
+        """Compatibility alias for :meth:`set_channel_setting` (volume only)."""
+        self.set_channel_setting(role, "volume", volume)
 
     # -- export / share -----------------------------------------------------
 

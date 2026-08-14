@@ -482,11 +482,12 @@ def test_volume_slider_calls_editor_writer_not_panel(app, tmp_path, monkeypatch)
     root.update_idletasks()
 
     writes = []
-    monkeypatch.setattr(instance.project, "set_channel_volume", lambda role, value: writes.append((role, value)))
+    monkeypatch.setattr(instance.project, "set_channel_setting",
+                        lambda role, setting, value: writes.append((role, setting, value)))
     panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
     panel._scale.set(40)
     panel._on_scale("40")
-    assert writes == [("music", 0.4)]
+    assert writes == [("music", "volume", 0.4)]
 
 
 def _load_music_with_file(instance, tmp_path, volume=0.5):
@@ -522,9 +523,9 @@ def test_volume_change_while_playing_rebakes_live(app, tmp_path, fake_session, f
     assert project.movie.audio.volume == pytest.approx(0.25)
     assert session.state == PlaybackSession.PLAYING  # old mix keeps playing
     assert len(fake_preview_worker) == 1  # debounced: no bake has started yet
-    assert editor._volume_rebake_id is not None  # a settled re-bake is pending
+    assert editor._rebake_id is not None  # a settled re-bake is pending
 
-    editor._run_volume_rebake()  # the debounce fires after the drag settles
+    editor._run_rebake()  # the debounce fires after the drag settles
 
     assert len(fake_preview_worker) == 2  # a live re-bake ran
     assert session.state == PlaybackSession.PLAYING
@@ -548,7 +549,7 @@ def test_volume_change_while_paused_rebakes_and_keeps_spot(app, tmp_path, fake_s
 
     panel._scale.set(10)
     panel._on_scale("10")
-    editor._run_volume_rebake()  # the debounce fires after the drag settles
+    editor._run_rebake()  # the debounce fires after the drag settles
 
     assert project.movie.audio.volume == pytest.approx(0.1)
     assert session.state == PlaybackSession.PLAYING  # live: re-baked and resumed
@@ -598,7 +599,7 @@ def test_volume_change_during_bake_never_starts_a_second(
 
     assert project.movie.audio.volume == pytest.approx(0.4)  # persisted per tick
     assert len(instances) == 1  # never a second bake
-    assert editor._volume_rebake_id is None  # and nothing scheduled
+    assert editor._rebake_id is None  # and nothing scheduled
 
 
 def test_stub_actions_never_write_files(app, tmp_path, monkeypatch, fake_import_worker):
@@ -718,3 +719,129 @@ def test_no_position_bar_anywhere(app, tmp_path):
     assert not hasattr(transport, "_seek")
     assert not hasattr(transport, "_position")
     assert not any(w.winfo_class() == "Scale" for w in transport.winfo_children())
+
+
+# -- User Story 1 (006): the four-slider shaping panel (T005, T006) ------------
+
+
+def test_adjustment_panel_renders_four_labeled_sliders_from_stored_values(app, tmp_path):
+    """FR-002/FR-004/FR-009: a loaded channel shows exactly four sliders —
+    Volume, Echo, Fade in, Fade out — each initialized from the stored value
+    and each minimum stop labeled "Off"."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(
+        kind="audio", filename="song.mp3",
+        volume=0.6, echo=0.4, fade_in=2.0, fade_out=3.0,
+    )
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    from stillpoint.gui import panels as panels_mod
+
+    assert set(panel._scales) == {"volume", "echo", "fade_in", "fade_out"}
+
+    def _labels(widget):
+        out = []
+        for child in widget.winfo_children():
+            if child.winfo_class() == "Label":
+                out.append(child.cget("text"))
+            out.extend(_labels(child))
+        return out
+
+    labels = _labels(panel._sound_body)
+    for text in (panels_mod.VOLUME_LABEL, panels_mod.ECHO_LABEL,
+                 panels_mod.FADE_IN_LABEL, panels_mod.FADE_OUT_LABEL):
+        assert text in labels
+
+    assert int(panel._scales["volume"].get()) == 60
+    assert int(panel._scales["echo"].get()) == 40
+    assert int(panel._scales["fade_in"].get()) == 20  # 2.0 s of the 10 s cap
+    assert int(panel._scales["fade_out"].get()) == 30
+
+    assert labels.count(panels_mod.OFF_LABEL) == 4  # every minimum stop is "Off"
+
+
+def test_adjustment_panel_empty_aim_shows_only_plain_note(app, tmp_path):
+    """FR-003: an empty aimed channel shows the plain line and no controls."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    editor = instance._editor
+    editor._on_rail_toggle(panels.PANEL_ADJUSTMENT)
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    from stillpoint.gui import panels as panels_mod
+
+    assert panels_mod.EMPTY_AIM_NOTE == "Add music or your voice first to shape its sound."
+    assert panel._scales == {}
+    assert panel._scale is None
+    assert not any(w.winfo_class() == "Scale" for w in panel._sound_body.winfo_children())
+    notes = [child.cget("text") for child in panel._sound_body.winfo_children()
+             if child.winfo_class() == "Label"]
+    assert notes == [panels_mod.EMPTY_AIM_NOTE]
+
+
+def test_adjustment_panel_rereads_on_aim_and_project_change(app, tmp_path):
+    """FR-003/FR-011: sliders re-read stored values on every aim change and
+    on set_project."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(
+        kind="audio", filename="song.mp3", volume=0.2, echo=0.1,
+    )
+    instance.project.movie.voice = model_mod.MediaItem(
+        kind="audio", filename="v.wav", volume=0.8, echo=0.5, fade_in=1.0,
+    )
+    instance._editor.refresh()
+    editor = instance._editor
+
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    assert int(panel._scales["volume"].get()) == 20
+    assert int(panel._scales["echo"].get()) == 10
+
+    editor._on_channel_click("voice")
+    root.update_idletasks()
+    assert editor._panel_widgets[panels.PANEL_ADJUSTMENT] is panel  # one panel, re-aimed
+    assert int(panel._scales["volume"].get()) == 80
+    assert int(panel._scales["echo"].get()) == 50
+    assert int(panel._scales["fade_in"].get()) == 10
+
+    instance.project.movie.voice.echo = 0.9
+    panel.set_project(instance.project)
+    root.update_idletasks()
+    assert int(panel._scales["echo"].get()) == 90
+
+
+def test_slider_move_reports_on_setting_for_aimed_role(app, tmp_path, monkeypatch):
+    """shaping-panel-ui.md: a slider move reports on_setting(role, setting,
+    value) with the aimed role — 0..1 for volume/echo, seconds for fades."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(
+        kind="audio", filename="song.mp3", volume=0.5)
+    instance.project.movie.voice = model_mod.MediaItem(
+        kind="audio", filename="v.wav", volume=0.5)
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("voice")
+    root.update_idletasks()
+
+    writes = []
+    monkeypatch.setattr(instance.project, "set_channel_setting",
+                        lambda role, setting, value: writes.append((role, setting, value)))
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    panel._scales["volume"].set(60)
+    panel._on_slider("volume", "60")
+    panel._scales["echo"].set(35)
+    panel._on_slider("echo", "35")
+    panel._scales["fade_in"].set(70)
+    panel._on_slider("fade_in", "70")
+    assert writes == [
+        ("voice", "volume", 0.6),
+        ("voice", "echo", 0.35),
+        ("voice", "fade_in", 7.0),
+    ]
