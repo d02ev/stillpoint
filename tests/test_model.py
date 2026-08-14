@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from stillpoint import model
@@ -8,6 +10,58 @@ def test_new_project_saves_files(tmp_path):
     assert project.project_file.exists()
     assert (tmp_path / "proj" / "media").is_dir()
     assert (tmp_path / "proj" / "renders").is_dir()
+
+
+def test_old_project_json_without_volume_opens_and_plays(tmp_path):
+    """T035 / FR-013: a Specs 001–004 project.json (audio items have no
+    ``volume`` field — Spec 5 added it) opens unchanged and plays at full
+    balance; the loader never invents or requires the new field."""
+    proj_dir = tmp_path / "old"
+    proj_dir.mkdir()
+    (proj_dir / "media").mkdir()
+    (proj_dir / "project.json").write_text(json.dumps({
+        "version": 1,
+        "title": "Old",
+        "created": "t0",
+        "ratio": "16:9",
+        "imageDuration": 5.0,
+        "movie": {
+            "duration": 10.0,
+            "ratio": "16:9",
+            "crossfade": 0.0,
+            "audio": {
+                "kind": "audio", "filename": "song.wav", "duration": 5.0,
+                "in_point": 0.0, "fade_in": 0.0, "fade_out": 0.0,
+            },
+            "voice": None,
+        },
+        "images": [{"kind": "image", "filename": "a.jpg", "duration": 5.0,
+                    "in_point": 0.0, "fade_in": 0.0, "fade_out": 0.0}],
+    }))
+    project = model.Project.load(proj_dir)
+    assert project.movie.audio is not None
+    assert project.movie.audio.filename == "song.wav"
+    assert project.movie.audio.volume == 1.0  # defaults to full — plays unchanged
+    (project.media_dir() / "song.wav").write_bytes(b"present")
+    from stillpoint import mix
+
+    plan = mix.plan_audio(project, total=5.0)
+    assert plan.has_audio is True
+    assert "volume=1.000" in plan.chains[0]
+
+
+def test_volume_edits_write_only_existing_fields(tmp_path):
+    """T035 / FR-013 / Constitution VIII: a volume edit reuses the existing
+    ``volume`` field — saving adds no new keys to the project file."""
+    project = model.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model.MediaItem(kind="audio", filename="song.mp3")
+    project.set_channel_volume("music", 0.4)
+    raw = json.loads((tmp_path / "proj" / "project.json").read_text())
+    assert set(raw["movie"].keys()) == {"duration", "ratio", "crossfade", "audio", "voice"}
+    assert set(raw["movie"]["audio"].keys()) == {
+        "kind", "filename", "duration", "in_point", "volume", "fade_in", "fade_out"
+    }
+    assert raw["movie"]["audio"]["volume"] == 0.4
 
 
 def test_roundtrip_preserves_content(tmp_path):

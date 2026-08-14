@@ -25,12 +25,19 @@ class App:
         self._home = HomeScreen(self)
         self._editor = EditorScreen(self)
         self._current: tk.Frame | None = None
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.show_home()
 
     # -- screen management ---------------------------------------------------
 
+    def _on_close(self) -> None:
+        """Window close: stop any preview playback before the root dies (FR-012)."""
+        self._editor.stop_playback()
+        self.root.destroy()
+
     def show_home(self) -> None:
+        self._editor.stop_playback()
         self.project = None
         if self._current:
             self._current.pack_forget()

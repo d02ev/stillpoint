@@ -1,8 +1,10 @@
 """Rendering: turn a project's timeline into an mp4 via ffmpeg.
 
 The movie is: each still image shown for its own duration with optional
-crossfades between consecutive images, over a fixed canvas, with an optional
-ambient audio track (trimmed to the movie length, faded in/out).
+crossfades between consecutive images, over a fixed canvas, plus the two-channel
+audio mix. The mix is NOT described here — it is the keystone
+``mix.plan_audio`` (Constitution III): ``build_spec`` composes the same plan the
+preview bakes, so what she hears is exactly what exports (FR-006/007).
 
 The ffmpeg command is built as data (a list of args) so the GUI can preview or
 customise it, and a `render()` driver runs it while parsing `-progress` output
@@ -15,7 +17,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import model as model_mod
+from . import mix, model as model_mod
 from . import names, paths
 from .media import ffmpeg_path
 
@@ -96,25 +98,10 @@ def build_spec(project: model_mod.Project, out_path: Path) -> RenderSpec:
                     f"xfade=transition=fade:duration={movie.crossfade:.3f}:offset={offset:.3f}[{out_label}]"
                 )
 
-    has_audio = movie.audio is not None
-    if has_audio and movie.audio is not None:
-        audio_file = project.media_file(movie.audio)
-        inputs += ["-i", str(audio_file)]
-        fade_in = max(0.0, movie.audio.fade_in)
-        fade_out = max(0.0, movie.audio.fade_out)
-        fade_out = min(fade_out, total * 0.5)
-        volume = max(0.0, min(1.0, movie.audio.volume))
-        chain = (
-            f"[{len(images)}:a]"
-            f"atrim=start={movie.audio.in_point:.3f}:end={movie.audio.in_point + total:.3f},asetpts=PTS-STARTPTS,"
-            f"volume={volume:.3f},apad,atrim=0:{total:.3f}"
-        )
-        if fade_in > 0:
-            chain += f",afade=t=in:st=0:d={fade_in:.3f}"
-        if fade_out > 0:
-            chain += f",afade=t=out:st={total - fade_out:.3f}:d={fade_out:.3f}"
-        chain += "[aout]"
-        chains.append(chain)
+    audio = mix.plan_audio(project, total, index_offset=len(images))
+    inputs += audio.inputs
+    chains += audio.chains
+    has_audio = audio.has_audio
 
     if images:
         chains.append(f"[vjoin]trim=duration={total:.3f},setpts=PTS-STARTPTS,fps={FPS},format=yuv420p[vout]")

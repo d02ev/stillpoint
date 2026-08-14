@@ -22,6 +22,51 @@ class RenderStatus:
     value: float | str = 0.0
 
 
+@dataclass
+class PreviewStatus:
+    state: str  # 'done' | 'error'
+    value: str | Exception = ""  # done → WAV path; error → the exception/str
+
+
+class PreviewWorker:
+    """Bakes the preview mix WAV in a daemon thread; poll poll() from the UI.
+
+    Mirrors ``ImportWorker``: the bake runs off the UI thread and the GUI polls
+    with ``root.after`` while BAKING — the window never blocks and two bakes
+    never contend (the editor disables the control during BAKING, FR-008/009).
+    The WAV is written to the system temp, outside the project (research
+    Decision 9, FR-012).
+    """
+
+    def __init__(self, project: model_mod.Project, out_path: Path, *, baker=None):
+        self._queue: "queue.Queue[PreviewStatus]" = queue.Queue()
+        self._project = project
+        self._out = out_path
+        self._baker = baker
+        self._thread = threading.Thread(target=self._run, name="stillpoint-preview-bake", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def poll(self) -> PreviewStatus | None:
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _run(self) -> None:
+        try:
+            if self._baker is not None:
+                self._baker(self._project, self._out)
+            else:
+                from .. import mix
+
+                mix.render_mix(self._project, self._out)
+            self._queue.put(PreviewStatus("done", str(self._out)))
+        except Exception as exc:  # noqa: BLE001 - bucketed by classify_playback_error
+            self._queue.put(PreviewStatus("error", exc))
+
+
 class RenderWorker:
     """Runs a render in a daemon thread; poll poll() from the UI."""
 

@@ -16,6 +16,7 @@ from stillpoint.gui.panels import (
     PANEL_IMAGE,
     PanelManager,
 )
+from stillpoint.gui.transport import UNAVAILABLE_TOOLTIP, transport_available
 
 
 def _movie(audio=None, voice=None) -> model_mod.Movie:
@@ -121,6 +122,91 @@ def test_reset_closes_and_resets_aim():
     pm.reset()
     assert pm.visible is None
     assert pm.aim == "music"
+
+
+# -- transport enablement (US1, FR-002) ----------------------------------------
+
+def test_transport_unavailable_without_channels():
+    assert transport_available(_movie()) is False
+
+
+def test_transport_available_with_music():
+    assert transport_available(_movie(audio=_audio("my-song.mp3"))) is True
+
+
+def test_transport_available_with_voice():
+    assert transport_available(_movie(voice=_audio("voice-over.wav"))) is True
+
+
+def test_transport_available_with_both():
+    assert transport_available(_movie(audio=_audio("a.mp3"), voice=_audio("v.wav"))) is True
+
+
+def test_transport_available_even_when_file_missing():
+    # "Recorded" comes from the model, never from the disk (FR-002).
+    assert transport_available(_movie(audio=_audio("gone.mp3"))) is True
+
+
+def test_transport_unavailable_tooltip_is_plain_language():
+    assert UNAVAILABLE_TOOLTIP == "Add music or your voice to preview"
+
+
+# -- Project.set_channel_volume (US2, FR-013/014/015) --------------------------
+
+def test_set_channel_volume_round_trips(tmp_path):
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.movie.voice = model_mod.MediaItem(kind="audio", filename="v.wav")
+    project.set_channel_volume("music", 0.6)
+    project.set_channel_volume("voice", 0.3)
+    assert project.movie.audio.volume == 0.6
+    assert project.movie.voice.volume == 0.3
+    reloaded = model_mod.Project.load(tmp_path / "proj")
+    assert reloaded.movie.audio.volume == 0.6
+    assert reloaded.movie.voice.volume == 0.3
+
+
+def test_set_channel_volume_persists_atomically(tmp_path):
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.set_channel_volume("music", 0.8)
+    # The write went through the existing atomic save path (project.json on disk).
+    assert (tmp_path / "proj" / "project.json").is_file()
+
+
+def test_set_channel_volume_clamps_to_unit_range(tmp_path):
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.set_channel_volume("music", 1.7)
+    assert project.movie.audio.volume == 1.0
+    project.set_channel_volume("music", -0.2)
+    assert project.movie.audio.volume == 0.0
+
+
+def test_set_channel_volume_unknown_role_raises(tmp_path):
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    with pytest.raises(ValueError):
+        project.set_channel_volume("banjo", 0.5)
+
+
+def test_set_channel_volume_unrecorded_channel_raises(tmp_path):
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    with pytest.raises(ValueError):
+        project.set_channel_volume("voice", 0.5)
+
+
+def test_set_channel_volume_adds_no_schema_fields(tmp_path):
+    project = model_mod.new_project("Vol", tmp_path / "proj", "t0")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="a.mp3")
+    project.movie.voice = model_mod.MediaItem(kind="audio", filename="v.wav")
+    project.set_channel_volume("music", 0.4)
+    data = model_mod.Project.load(tmp_path / "proj").to_dict()
+    movie = data["movie"]
+    assert set(movie.keys()) == {"duration", "ratio", "crossfade", "audio", "voice"}
+    assert set(movie["audio"].keys()) == {"kind", "filename", "duration", "in_point", "volume", "fade_in", "fade_out"}
+    assert set(movie["voice"].keys()) == set(movie["audio"].keys())
 
 
 # -- icon generation ---------------------------------------------------------

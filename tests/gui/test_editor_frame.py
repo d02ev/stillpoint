@@ -8,9 +8,11 @@ flow is driven with a scripted fake worker so no real conversion ever runs.
 import pytest
 
 from stillpoint import model as model_mod
-from stillpoint.gui.app import App
 from stillpoint.gui import panels
+from stillpoint.gui import transport
+from stillpoint.gui.app import App
 from stillpoint.import_audio import UNREADABLE_MESSAGE, ImportEvent
+from stillpoint.playback import PlaybackSession
 
 
 @pytest.fixture
@@ -46,6 +48,74 @@ def fake_import_worker(monkeypatch):
     yield FakeWorker
     FakeWorker.script = []
     FakeWorker.instances = []
+
+
+@pytest.fixture
+def fake_session(monkeypatch):
+    """Route the editor's real PlaybackSession to a sink that touches nothing real."""
+    from stillpoint.gui import editor as editor_mod
+    from stillpoint.playback import PlaybackSession
+
+    class FakeSink:
+        def __init__(self):
+            self.calls = []
+            self._pos_seconds = 0.0
+
+        def open(self, path, *, start_seconds=0.0):
+            self.calls.append(("open", str(path), start_seconds))
+
+        def play(self):
+            self.calls.append(("play",))
+
+        def pause(self):
+            self.calls.append(("pause",))
+
+        def resume(self):
+            self.calls.append(("resume",))
+
+        def restart(self):
+            self.calls.append(("restart",))
+
+        def done(self):
+            return False
+
+        def position_seconds(self):
+            return self._pos_seconds
+
+        def stop(self):
+            self.calls.append(("stop",))
+
+    def _factory():
+        session = PlaybackSession(sink=FakeSink())
+        _factory.instances.append(session)
+        return session
+
+    _factory.instances = []
+    monkeypatch.setattr(editor_mod, "PlaybackSession", _factory)
+    return _factory
+
+
+@pytest.fixture
+def fake_preview_worker(monkeypatch):
+    """Scripted PreviewWorker: every bake is 'done' with a bogus WAV path."""
+    from stillpoint.gui import editor as editor_mod
+    from stillpoint.gui.workers import PreviewStatus
+
+    instances = []
+
+    class FakePreviewWorker:
+        def __init__(self, project, out_path, **kwargs):
+            self.out_path = out_path
+            instances.append(self)
+
+        def start(self):
+            pass
+
+        def poll(self):
+            return PreviewStatus("done", self.out_path)
+
+    monkeypatch.setattr(editor_mod, "PreviewWorker", FakePreviewWorker)
+    return instances
 
 
 def _open_empty_project(instance, tmp_path, title="First Mix"):
@@ -270,14 +340,61 @@ def test_loaded_but_missing_file_still_loaded(app, tmp_path):
     assert instance._editor._music_row.state() == "loaded"
 
 
-# -- User Story 6: transport and export are present but quiet -------------------
+# -- User Story 6: transport states (Spec 5, FR-001/002/011) --------------------
 
-def test_transport_disabled_even_with_audio(app, tmp_path):
+def test_transport_unavailable_without_audio(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    root.update_idletasks()
+    t = instance._editor._transport
+    assert t.state == "unavailable"
+    assert str(t._button.cget("state")) == "disabled"
+    assert t.tooltip() == transport.UNAVAILABLE_TOOLTIP
+
+
+def test_transport_enabled_with_audio(app, tmp_path):
     instance, root = app
     _open_empty_project(instance, tmp_path)
     instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
     instance._editor.refresh()
-    assert str(instance._editor._transport._button.cget("state")) == "disabled"
+    root.update_idletasks()
+    t = instance._editor._transport
+    assert t.state == "play"
+    assert str(t._button.cget("state")) == "normal"
+    assert t.tooltip() == transport.PLAY_FROM_TOP_TOOLTIP
+
+
+def test_transport_play_pause_preparing_rendering(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    root.update_idletasks()
+    from stillpoint.gui import icons
+
+    t = instance._editor._transport
+
+    t.set_state(transport.PLAY)
+    assert str(t._button.cget("state")) == "normal"
+    assert str(t._button.cget("image")) == str(icons.get_icon("play"))
+    assert t.tooltip() == transport.PLAY_FROM_TOP_TOOLTIP
+
+    t.set_state(transport.PAUSE)
+    assert str(t._button.cget("state")) == "normal"
+    assert str(t._button.cget("image")) == str(icons.get_icon("pause"))
+    assert t.tooltip() == transport.PAUSE_TOOLTIP
+
+    t.set_state(transport.PREPARING)
+    assert str(t._button.cget("state")) == "disabled"
+    assert str(t._button.cget("image")) == str(icons.get_icon("play", disabled=True))
+    assert t.tooltip() == transport.PREPARING_TOOLTIP
+
+
+def test_transport_resume_tooltip_when_paused(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    root.update_idletasks()
+    t = instance._editor._transport
+    t.set_state(transport.PLAY, paused=True)
+    assert t.tooltip() == transport.RESUME_TOOLTIP
 
 
 def test_export_shows_notice(app, tmp_path, monkeypatch):
@@ -287,6 +404,201 @@ def test_export_shows_notice(app, tmp_path, monkeypatch):
     monkeypatch.setattr("stillpoint.dialogs.info", lambda *a, **k: noticed.append(a))
     instance._editor._on_export()
     assert noticed and "Exporting isn't ready yet" in noticed[0][1]
+
+
+# -- User Story 6: volume slider in the adjustment panel (US2, FR-014/015) -----
+
+def test_adjustment_panel_empty_aim_shows_plain_note(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    editor = instance._editor
+    editor._on_rail_toggle(panels.PANEL_ADJUSTMENT)  # aims at empty music channel
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    assert panel._scale is None
+    from stillpoint.gui import panels as panels_mod
+
+    notes = [child.cget("text") for child in panel._sound_body.winfo_children()
+             if child.winfo_class() == "Label"]
+    assert panels_mod.EMPTY_AIM_NOTE in notes
+
+
+def test_adjustment_panel_slider_initialized_from_stored_volume(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3", volume=0.6)
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    assert panel._scale is not None
+    assert int(panel._scale.get()) == 60
+
+
+def test_volume_slider_change_persists_balance(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3", volume=0.5)
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    panel._scale.set(25)
+    panel._on_scale("25")  # what Tk invokes on a real drag
+    assert instance.project.movie.audio.volume == pytest.approx(0.25)
+    reloaded = model_mod.Project.load(tmp_path / "First Mix")
+    assert reloaded.movie.audio.volume == pytest.approx(0.25)
+
+
+def test_volume_slider_reaired_re_reads_volume(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3", volume=0.2)
+    instance.project.movie.voice = model_mod.MediaItem(kind="audio", filename="v.wav", volume=0.8)
+    instance._editor.refresh()
+    editor = instance._editor
+
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    music_panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    assert int(music_panel._scale.get()) == 20
+
+    editor._on_channel_click("voice")
+    root.update_idletasks()
+    voice_panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    assert voice_panel is music_panel  # one panel, one aimed channel
+    assert int(voice_panel._scale.get()) == 80
+
+
+def test_volume_slider_calls_editor_writer_not_panel(app, tmp_path, monkeypatch):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3", volume=0.5)
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+
+    writes = []
+    monkeypatch.setattr(instance.project, "set_channel_volume", lambda role, value: writes.append((role, value)))
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    panel._scale.set(40)
+    panel._on_scale("40")
+    assert writes == [("music", 0.4)]
+
+
+def _load_music_with_file(instance, tmp_path, volume=0.5):
+    """A loaded music channel whose file exists, so the mix signature reacts."""
+    _open_empty_project(instance, tmp_path)
+    project = instance.project
+    media = project.media_dir()
+    media.mkdir(parents=True, exist_ok=True)
+    (media / "song.mp3").write_bytes(b"x")
+    project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3", volume=volume)
+    project.save()
+    instance._editor.refresh()
+    return project
+
+
+def test_volume_change_while_playing_rebakes_live(app, tmp_path, fake_session, fake_preview_worker):
+    instance, root = app
+    project = _load_music_with_file(instance, tmp_path)
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+
+    editor._on_transport()  # play → bake → play
+    assert len(fake_preview_worker) == 1
+    session = editor._playback
+    assert session.state == PlaybackSession.PLAYING
+
+    session.sink._pos_seconds = 9.5
+    panel._scale.set(25)
+    panel._on_scale("25")  # the knob moves while previewing
+
+    assert project.movie.audio.volume == pytest.approx(0.25)
+    assert session.state == PlaybackSession.PLAYING  # old mix keeps playing
+    assert len(fake_preview_worker) == 1  # debounced: no bake has started yet
+    assert editor._volume_rebake_id is not None  # a settled re-bake is pending
+
+    editor._run_volume_rebake()  # the debounce fires after the drag settles
+
+    assert len(fake_preview_worker) == 2  # a live re-bake ran
+    assert session.state == PlaybackSession.PLAYING
+    assert session.sink.calls[-2] == ("open", str(fake_preview_worker[-1].out_path), 9.5)
+    assert session.sink.calls[-1] == ("play",)
+
+
+def test_volume_change_while_paused_rebakes_and_keeps_spot(app, tmp_path, fake_session, fake_preview_worker):
+    instance, root = app
+    project = _load_music_with_file(instance, tmp_path)
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+
+    editor._on_transport()  # play
+    editor._on_transport()  # pause partway
+    session = editor._playback
+    assert session.state == PlaybackSession.PAUSED
+    session.sink._pos_seconds = 4.0
+
+    panel._scale.set(10)
+    panel._on_scale("10")
+    editor._run_volume_rebake()  # the debounce fires after the drag settles
+
+    assert project.movie.audio.volume == pytest.approx(0.1)
+    assert session.state == PlaybackSession.PLAYING  # live: re-baked and resumed
+    assert len(fake_preview_worker) == 2
+    assert session.sink.calls[-2] == ("open", str(fake_preview_worker[-1].out_path), 4.0)
+    assert session.sink.calls[-1] == ("play",)
+
+
+def test_volume_change_during_bake_never_starts_a_second(
+    app, tmp_path, fake_session, monkeypatch
+):
+    """While a bake is in flight, slider changes persist but never start a
+    second bake — the running bake sees the change via ``needs_rebake`` and
+    re-bakes once it settles (FR-015; two ffmpeg bakes never contend,
+    Constitution II)."""
+    from stillpoint.gui import editor as editor_mod
+
+    instances = []
+
+    class DrainingWorker:
+        def __init__(self, project, out_path, **kwargs):
+            self.out_path = out_path
+            instances.append(self)
+
+        def start(self):
+            pass
+
+        def poll(self):
+            return None  # the bake never completes during this test
+
+    monkeypatch.setattr(editor_mod, "PreviewWorker", DrainingWorker)
+    instance, root = app
+    project = _load_music_with_file(instance, tmp_path)
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+
+    editor._on_transport()  # play → bake (draining) → still baking
+    assert editor._preview_worker is not None
+    assert len(instances) == 1
+
+    panel._scale.set(30)
+    panel._on_scale("30")  # the knob moves while the bake runs
+    panel._scale.set(40)
+    panel._on_scale("40")
+
+    assert project.movie.audio.volume == pytest.approx(0.4)  # persisted per tick
+    assert len(instances) == 1  # never a second bake
+    assert editor._volume_rebake_id is None  # and nothing scheduled
 
 
 def test_stub_actions_never_write_files(app, tmp_path, monkeypatch, fake_import_worker):
@@ -306,3 +618,103 @@ def test_stub_actions_never_write_files(app, tmp_path, monkeypatch, fake_import_
     after = {p.name for p in (tmp_path / "First Mix").iterdir()}
     assert before == after
     assert project.movie.audio is None and project.movie.voice is None
+
+
+# -- User Story 3 (T025): idle CPU while paused ---------------------------------
+
+def test_no_polling_while_paused(app, tmp_path, fake_session, fake_preview_worker):
+    """Pausing cancels the pending playback poll: no after() callback is
+    scheduled while paused, and invoking the poll handler stays a no-op
+    (Constitution II, US-3 'idle CPU ≈ 0' acceptance)."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+
+    editor._on_transport()  # bake → play
+    root.update_idletasks()
+    assert editor._playback.state == PlaybackSession.PLAYING
+    assert editor._playback_poll_id is not None  # polling while playing
+
+    editor._on_transport()  # pause
+    root.update_idletasks()
+    assert editor._playback.state == PlaybackSession.PAUSED
+    assert editor._playback_poll_id is None  # nothing scheduled while paused
+
+    editor._poll_playback()  # a stale/fired callback is a no-op
+    assert editor._playback_poll_id is None  # and stays unscheduled
+    assert fake_session.instances[0].sink.calls[-1] == ("pause",)
+
+
+# -- User Story 4 (T029): Start over surface (FR-004, Clarification Q3) -----------
+
+def test_start_over_hidden_until_playback_begins(app, tmp_path):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    root.update_idletasks()
+    editor = instance._editor
+    assert editor._transport.start_over_state() == "hidden"
+    assert str(editor._transport._start_over.cget("state")) == "disabled"
+
+
+def test_start_over_available_while_playing_and_paused(app, tmp_path, fake_session, fake_preview_worker):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+
+    editor._on_transport()  # play
+    root.update_idletasks()
+    assert editor._transport.start_over_state() == "enabled"
+    assert editor._transport._start_over.cget("text") == "Start over"
+
+    editor._on_transport()  # pause partway
+    root.update_idletasks()
+    assert editor._transport.start_over_state() == "enabled"
+    assert editor._transport.start_over_tooltip() == "Start the preview again from the top"
+
+
+def test_start_over_disabled_while_baking(app, tmp_path, fake_session):
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+    from stillpoint.gui import editor as editor_mod
+    from stillpoint.gui.workers import PreviewStatus
+
+    class DrainingWorker:
+        def __init__(self, project, out_path, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def poll(self):
+            return None  # bake still running
+
+    original = editor_mod.PreviewWorker
+    editor_mod.PreviewWorker = DrainingWorker
+    try:
+        editor._on_transport()
+    finally:
+        editor_mod.PreviewWorker = original
+    assert editor._transport.state == "preparing"
+    assert editor._transport.start_over_state() == "hidden"
+
+
+def test_no_position_bar_anywhere(app, tmp_path):
+    """FR-004 / Clarification Q3: there is no position bar and nothing to drag."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+    transport = editor._transport
+    assert not hasattr(transport, "_seek")
+    assert not hasattr(transport, "_position")
+    assert not any(w.winfo_class() == "Scale" for w in transport.winfo_children())

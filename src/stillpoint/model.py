@@ -285,6 +285,22 @@ class Project:
         self.save()
         return item
 
+    def set_channel_volume(self, role: str, volume: float) -> None:
+        """Set a channel's balance in the existing ``volume`` field (FR-014/015).
+
+        ``role`` ∈ ``"music"`` | ``"voice"``. Writes ``movie.<role>.volume``
+        clamped to 0..1 and persists immediately through the existing atomic
+        :meth:`save` (reconciliation R2, Constitution IV) — no new persisted
+        fields (FR-013, Constitution VIII). Raises ``ValueError`` for an unknown
+        role or an unrecorded channel. The change is heard on the next play-from
+        stop (signature-driven re-bake) and is identical in preview and export.
+        """
+        item = {"music": self.movie.audio, "voice": self.movie.voice}.get(role)
+        if item is None:
+            raise ValueError(f"no {role} channel is recorded")
+        item.volume = _clamp(volume, 0.0, 1.0)
+        self.save()
+
     # -- export / share -----------------------------------------------------
 
     def make_share_archive(self, zip_path: Path) -> None:

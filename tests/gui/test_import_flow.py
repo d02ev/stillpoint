@@ -13,6 +13,7 @@ from stillpoint import model as model_mod
 from stillpoint.gui.app import App
 from stillpoint.gui.channels import MUSIC_ROLE, VOICE_ROLE
 from stillpoint.import_audio import IMPORTING, OTHER_MESSAGE, UNREADABLE_MESSAGE, WAIT_MESSAGE, ImportEvent
+from stillpoint.playback import PlaybackSession
 
 
 @pytest.fixture
@@ -21,6 +22,118 @@ def app(tk_root):
     yield instance, tk_root
     for child in tk_root.winfo_children():
         child.destroy()
+
+
+@pytest.fixture
+def fake_session(monkeypatch):
+    """Route the editor's real PlaybackSession to a sink that touches nothing real."""
+
+    class FakeSink:
+        def __init__(self):
+            self.calls = []
+            self._pos_seconds = 0.0
+
+        def open(self, path, *, start_seconds=0.0):
+            self.calls.append(("open", str(path), start_seconds))
+
+        def play(self):
+            self.calls.append(("play",))
+
+        def pause(self):
+            self.calls.append(("pause",))
+
+        def resume(self):
+            self.calls.append(("resume",))
+
+        def restart(self):
+            self.calls.append(("restart",))
+
+        def done(self):
+            return False
+
+        def position_seconds(self):
+            return self._pos_seconds
+
+        def stop(self):
+            self.calls.append(("stop",))
+
+    from stillpoint.gui import editor as editor_mod
+
+    def _factory():
+        return PlaybackSession(sink=FakeSink())
+
+    monkeypatch.setattr(editor_mod, "PlaybackSession", _factory)
+    return _factory
+
+
+@pytest.fixture
+def fake_preview_worker(monkeypatch):
+    """Scripted PreviewWorker: every bake is 'done' with a bogus WAV path."""
+    from stillpoint.gui import editor as editor_mod
+    from stillpoint.gui.workers import PreviewStatus
+
+    instances = []
+
+    class FakePreviewWorker:
+        def __init__(self, project, out_path, **kwargs):
+            self.out_path = out_path
+            instances.append(self)
+
+        def start(self):
+            pass
+
+        def poll(self):
+            return PreviewStatus("done", self.out_path)
+
+    monkeypatch.setattr(editor_mod, "PreviewWorker", FakePreviewWorker)
+    return instances
+
+
+def test_playback_coexists_with_in_flight_import(
+    app, tmp_path, monkeypatch, fake_session, fake_preview_worker
+):
+    """US3 (T024): play/pause coexist with a running import — neither side
+    interrupts or crashes the other, and no error dialog appears."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+    noticed = []
+    monkeypatch.setattr("stillpoint.dialogs.info", lambda *a, **k: noticed.append(a))
+
+    monkeypatch.setattr("stillpoint.gui.editor.pick_audio_file", lambda parent=None: "C:/voice.mp3")
+    made = {}
+
+    class ImportWorker:
+        def __init__(self, project, path, *, convert=None):
+            made["project"] = project
+            self._once = True  # report "importing" once, then stay silent (in flight)
+
+        def start(self):
+            made["started"] = True
+
+        def poll(self):
+            if self._once:
+                self._once = False
+                return ImportEvent("importing", 0.3, IMPORTING)
+            return None
+
+    monkeypatch.setattr("stillpoint.gui.editor.ImportWorker", ImportWorker)
+    editor._voice_row._on_import()
+    assert editor._import_worker is not None  # the import is in flight
+
+    editor._on_transport()  # press play mid-import
+    root.update_idletasks()
+    assert editor._transport.state == "pause"
+    assert editor._playback is not None
+    assert editor._playback.state == PlaybackSession.PLAYING
+    assert fake_preview_worker  # the bake ran alongside the import
+    assert editor._import_worker is not None  # the import is not interrupted
+    assert made.get("started") is True
+    assert noticed == []  # no error dialogs, ever
+    assert instance.project.movie.voice is None  # project untouched by playback
+    assert instance.project.movie.audio is not None
 
 
 def _open_empty_project(instance, tmp_path, title="First Mix"):
