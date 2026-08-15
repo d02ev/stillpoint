@@ -25,9 +25,17 @@ class App:
         self._home = HomeScreen(self)
         self._editor = EditorScreen(self)
         self._current: tk.Frame | None = None
+        self._build_menu()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.show_home()
+
+    def _build_menu(self) -> None:
+        menubar = tk.Menu(self.root)
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="Export", command=self._editor._on_export)
+        menubar.add_cascade(label="File", menu=file_menu)
+        self.root.configure(menu=menubar)
 
     # -- screen management ---------------------------------------------------
 

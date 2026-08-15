@@ -28,4 +28,4 @@ default-groups = ["dev"]
 
 [project.scripts]
 stillpoint = "stillpoint.gui.app:run"
-build-exe = "build_exe:main"
+build-exe = "stillpoint.build_exe:main"

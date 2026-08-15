@@ -280,6 +280,7 @@ def test_signature_constant_for_unchanged_project(tmp_path):
 
 def test_render_mix_silent_wav_when_no_audio(tmp_path):
     proj = _project(tmp_path)
+    proj.movie.duration = 1.0  # single still: timeline = movie.duration (007)
     out = tmp_path / "preview.wav"
     progress = []
     mix.render_mix(proj, out, progress_cb=progress.append)
@@ -294,6 +295,7 @@ def test_render_mix_silent_wav_when_no_audio(tmp_path):
 
 def test_render_mix_bakes_audio_to_wav(tmp_path):
     proj = _project(tmp_path)
+    proj.movie.duration = 1.0  # single still: timeline = movie.duration (007)
     _attach_tone(proj, tmp_path, "music", volume=0.8, fade_in=0.1, fade_out=0.1)
     out = tmp_path / "preview.wav"
     mix.render_mix(proj, out)

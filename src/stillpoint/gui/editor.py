@@ -47,7 +47,6 @@ _MIN_SIZE = (960, 600)
 
 _AUDIO_FILETYPES = [("Audio", "*.mp3 *.wav *.m4a *.ogg *.flac *.aac *.opus"), ("All files", "*.*")]
 
-_EXPORT_NOTICE = "Exporting isn't ready yet. You'll be able to save your video here soon."
 _IMPORT_POLL_MS = 100
 _PREVIEW_POLL_MS = 100
 _PLAYBACK_POLL_MS = 100
@@ -581,7 +580,11 @@ class EditorScreen(tk.Frame):
             self._rebake_id = None
 
     def _on_export(self) -> None:
-        dialogs.info("Stillpoint", _EXPORT_NOTICE, parent=self)
+        if self.app.project is None:
+            return
+        from . import export
+
+        export.show_export_dialog(self.app, self.app.project)
 
 
 def _channel_state_for(project, role: str) -> tuple[str, str | None]:

@@ -5,6 +5,8 @@ monkeypatched dialogs/file pickers so no modal window ever blocks. The import
 flow is driven with a scripted fake worker so no real conversion ever runs.
 """
 
+import json
+
 import pytest
 
 from stillpoint import model as model_mod
@@ -882,3 +884,111 @@ def test_slider_move_reports_on_setting_for_aimed_role(app, tmp_path, monkeypatc
         ("voice", "echo", 0.35),
         ("voice", "fade_in", 7.0),
     ]
+
+
+# -- Percentage readouts (FR-009): each slider shows its live percentage -------
+
+def test_adjustment_panel_shows_percentage_readouts(app, tmp_path):
+    """Each of the four sliders renders with a live percentage readout built
+    from the stored value — 0..100% for volume/echo, % of the max fade for
+    fades."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(
+        kind="audio", filename="song.mp3",
+        volume=0.6, echo=0.4, fade_in=2.0, fade_out=3.0,
+    )
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+
+    assert panel._percent_labels["volume"].cget("text") == "60%"
+    assert panel._percent_labels["echo"].cget("text") == "40%"
+    assert panel._percent_labels["fade_in"].cget("text") == "20%"  # 2.0 s of the 10 s cap
+    assert panel._percent_labels["fade_out"].cget("text") == "30%"
+
+
+def test_percentage_readout_tracks_slider_moves(app, tmp_path):
+    """A slider drag updates its percentage readout live, on every tick."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+
+    panel._scales["volume"].set(25)
+    panel._on_slider("volume", "25")
+    panel._scales["echo"].set(80)
+    panel._on_slider("echo", "80")
+    panel._scales["fade_in"].set(45)
+    panel._on_slider("fade_in", "45")
+
+    assert panel._percent_labels["volume"].cget("text") == "25%"
+    assert panel._percent_labels["echo"].cget("text") == "80%"
+    assert panel._percent_labels["fade_in"].cget("text") == "45%"
+
+
+def test_empty_aim_has_no_percentage_readouts(app, tmp_path):
+    """An empty aimed channel shows the plain note and no readouts (FR-003)."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    editor = instance._editor
+    editor._on_rail_toggle(panels.PANEL_ADJUSTMENT)
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+    assert panel._percent_labels == {}
+
+
+# -- Persistence (R2): the config file keeps the accurate metric per slider -----
+
+def test_every_slider_persists_accurate_metric_to_config_file(app, tmp_path):
+    """Dragging every slider writes the accurate metric to project.json on
+    each tick, and a reload re-renders the same percentage readouts."""
+    instance, root = app
+    _open_empty_project(instance, tmp_path)
+    instance.project.movie.audio = model_mod.MediaItem(kind="audio", filename="song.mp3")
+    instance._editor.refresh()
+    editor = instance._editor
+    editor._on_channel_click("music")
+    root.update_idletasks()
+    panel = editor._panel_widgets[panels.PANEL_ADJUSTMENT]
+
+    panel._scales["volume"].set(35)
+    panel._on_slider("volume", "35")
+    panel._scales["echo"].set(40)
+    panel._on_slider("echo", "40")
+    panel._scales["fade_in"].set(25)
+    panel._on_slider("fade_in", "25")
+    panel._scales["fade_out"].set(65)
+    panel._on_slider("fade_out", "65")
+
+    item = instance.project.movie.audio
+    assert item.volume == pytest.approx(0.35)
+    assert item.echo == pytest.approx(0.4)
+    assert item.fade_in == pytest.approx(2.5)
+    assert item.fade_out == pytest.approx(6.5)
+
+    raw = json.loads((tmp_path / "First Mix" / "project.json").read_text())
+    stored = raw["movie"]["audio"]
+    assert stored["volume"] == pytest.approx(0.35)
+    assert stored["echo"] == pytest.approx(0.4)
+    assert stored["fade_in"] == pytest.approx(2.5)
+    assert stored["fade_out"] == pytest.approx(6.5)
+
+    reloaded = model_mod.Project.load(tmp_path / "First Mix")
+    assert reloaded.movie.audio.volume == pytest.approx(0.35)
+    assert reloaded.movie.audio.echo == pytest.approx(0.4)
+    assert reloaded.movie.audio.fade_in == pytest.approx(2.5)
+    assert reloaded.movie.audio.fade_out == pytest.approx(6.5)
+
+    panel.set_project(reloaded)
+    root.update_idletasks()
+    assert panel._percent_labels["volume"].cget("text") == "35%"
+    assert panel._percent_labels["echo"].cget("text") == "40%"
+    assert panel._percent_labels["fade_in"].cget("text") == "25%"
+    assert panel._percent_labels["fade_out"].cget("text") == "65%"

@@ -91,6 +91,29 @@ def test_echo_serializes_and_round_trips(tmp_path):
     assert model.MediaItem.to_dict(loaded.movie.audio)["echo"] == 0.7
 
 
+def test_all_shaping_metrics_round_trip_through_config_file(tmp_path):
+    """R2: every slider's metric — volume, echo, fade_in, fade_out — is
+    persisted accurately to project.json and comes back exactly on load, so
+    the readout after reopening matches where she left it."""
+    project = model.new_project("Shaping", tmp_path / "proj", "t0")
+    project.movie.audio = model.MediaItem(
+        kind="audio", filename="a.mp3", volume=0.35, echo=0.4, fade_in=2.5, fade_out=6.5)
+    project.save()
+
+    raw = json.loads((tmp_path / "proj" / "project.json").read_text())
+    stored = raw["movie"]["audio"]
+    assert stored["volume"] == pytest.approx(0.35)
+    assert stored["echo"] == pytest.approx(0.4)
+    assert stored["fade_in"] == pytest.approx(2.5)
+    assert stored["fade_out"] == pytest.approx(6.5)
+
+    loaded = model.Project.load(tmp_path / "proj")
+    assert loaded.movie.audio.volume == pytest.approx(0.35)
+    assert loaded.movie.audio.echo == pytest.approx(0.4)
+    assert loaded.movie.audio.fade_in == pytest.approx(2.5)
+    assert loaded.movie.audio.fade_out == pytest.approx(6.5)
+
+
 def test_pre_006_project_opens_with_echo_off(tmp_path):
     """T016 / FR-012: a project saved before this feature (audio items with no
     ``echo`` field) opens unchanged with echo off — defaults, never an error."""

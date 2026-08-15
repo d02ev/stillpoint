@@ -90,10 +90,11 @@ class _PanelFrame(tk.Frame):
 class AdjustmentPanel(_PanelFrame):
     """The per-channel sound controls (006): four labeled sliders — Volume,
     Echo, Fade in, Fade out — for the aimed loaded channel, each minimum stop
-    labeled "Off". Empty aim shows the plain "Add music or your voice first to
-    shape its sound." line instead of any control (FR-003). The editor owns
-    model writes — this widget only reports ``on_setting(role, setting,
-    value)`` and never touches the project itself.
+    labeled "Off" and each slider's position shown as a live percentage
+    readout (e.g. "60%"). Empty aim shows the plain "Add music or your voice
+    first to shape its sound." line instead of any control (FR-003). The
+    editor owns model writes — this widget only reports ``on_setting(role,
+    setting, value)`` and never touches the project itself.
     """
 
     def __init__(self, master, on_setting=None, **kwargs):
@@ -102,6 +103,7 @@ class AdjustmentPanel(_PanelFrame):
         self._project = None
         self._aim = "music"
         self._scales: dict[str, tk.Scale] = {}
+        self._percent_labels: dict[str, tk.Label] = {}
         self._aim_label = tk.Label(
             self._body, text="", bg=theme.Palette.panel, fg=theme.Palette.accent,
             font=(theme.FONT_FAMILY, theme.FONT_SIZE, "bold"))
@@ -141,6 +143,7 @@ class AdjustmentPanel(_PanelFrame):
         for child in self._sound_body.winfo_children():
             child.destroy()
         self._scales = {}
+        self._percent_labels = {}
         item = self._channel_item()
         if item is None:
             tk.Label(self._sound_body, text=EMPTY_AIM_NOTE, bg=theme.Palette.panel,
@@ -154,7 +157,8 @@ class AdjustmentPanel(_PanelFrame):
         self._add_setting_row("fade_out", FADE_OUT_LABEL, item.fade_out)
 
     def _add_setting_row(self, setting: str, label_text: str, value: float) -> None:
-        """One labeled slider whose leftmost stop reads "Off" (FR-009)."""
+        """One labeled slider whose leftmost stop reads "Off" (FR-009) and
+        whose live position reads as a percentage on the right."""
         frame = tk.Frame(self._sound_body, bg=theme.Palette.panel)
         frame.pack(fill="x", pady=(theme.PAD_SMALL, 0))
         tk.Label(frame, text=label_text, bg=theme.Palette.panel,
@@ -165,16 +169,22 @@ class AdjustmentPanel(_PanelFrame):
         tk.Label(scale_row, text=OFF_LABEL, bg=theme.Palette.panel,
                  fg=theme.Palette.text_dim, font=(theme.FONT_FAMILY, theme.FONT_SIZE)
                  ).pack(side="left", padx=(0, 2))
+        position = self._slider_position(setting, value)
+        percent = tk.Label(scale_row, text=self._percent_text(position),
+                           bg=theme.Palette.panel, fg=theme.Palette.text_dim,
+                           font=(theme.FONT_FAMILY, theme.FONT_SIZE))
+        percent.pack(side="right", padx=(2, 0))
         scale = tk.Scale(
             scale_row, from_=0, to=100, orient="horizontal",
             showvalue=False, bg=theme.Palette.panel, fg=theme.Palette.text,
             highlightthickness=0, troughcolor=theme.Palette.panel_light,
             activebackground=theme.Palette.accent,
         )
-        scale.set(self._slider_position(setting, value))
+        scale.set(position)
         scale.configure(command=lambda v, s=setting: self._on_slider(s, v))
         scale.pack(side="left", fill="x", expand=True)
         self._scales[setting] = scale
+        self._percent_labels[setting] = percent
 
     @staticmethod
     def _slider_position(setting: str, value: float) -> int:
@@ -192,8 +202,16 @@ class AdjustmentPanel(_PanelFrame):
             return position / 100.0
         return position / 100.0 * FADE_MAX_SECONDS
 
+    @staticmethod
+    def _percent_text(position: int) -> str:
+        """The human-readable readout for a slider position — "60%" (FR-009)."""
+        return f"{int(position)}%"
+
     def _on_slider(self, setting: str, value: str) -> None:
         """A slider move: report on_setting(role, setting, value) — report-only."""
+        percent = self._percent_labels.get(setting)
+        if percent is not None:
+            percent.configure(text=self._percent_text(value))
         if self._on_setting is not None:
             self._on_setting(self._aim, setting, self._slider_value(setting, value))
 

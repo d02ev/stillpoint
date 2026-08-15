@@ -56,9 +56,16 @@ def _scale_pad(v: str, width: int, height: int) -> str:
 
 
 def timeline_duration(project: model_mod.Project) -> float:
-    """Seconds of finished film: images overlap by the crossfade."""
+    """Seconds of finished film: images overlap by the crossfade.
+
+    A project with at most one image is the single-still background (spec 007):
+    it fills the whole film, so the timeline is ``movie.duration`` — regardless
+    of the picture's recorded length, so a project saved under the older rule
+    (picture duration = timeline) keeps playing the full meditation. Two or
+    more images form a slideshow whose durations overlap by the crossfade.
+    """
     movie = project.movie
-    if not project.images:
+    if len(project.images) <= 1:
         return movie.duration
     raw = sum(item.duration for item in project.images)
     overlap = movie.crossfade * (len(project.images) - 1)
@@ -78,7 +85,10 @@ def build_spec(project: model_mod.Project, out_path: Path) -> RenderSpec:
         chains.append(f"color=c={BG_COLOR}:s={width}x{height}:d={total}:r={FPS}[vbase]")
     else:
         for index, item in enumerate(images):
-            length = item.duration + movie.crossfade + 0.25  # headroom for the fade
+            if len(images) == 1:
+                length = total  # the single still fills the whole film (007)
+            else:
+                length = item.duration + movie.crossfade + 0.25  # headroom for the fade
             inputs += ["-loop", "1", "-framerate", str(FPS), "-t", f"{length:.3f}", "-i", str(project.media_file(item))]
             src = f"[{index}:v]"
             prep = _scale_pad(src, width, height)

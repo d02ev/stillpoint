@@ -371,7 +371,7 @@ def test_set_background_image_writes_single_entry_and_saves(tmp_path):
     item = project.set_background_image("lake.jpg")
     assert item.kind == "image"
     assert item.filename == "lake.jpg"
-    assert item.duration == project.image_duration
+    assert item.duration == project.movie.duration  # the still spans the whole film
     loaded = model_mod.Project.load(project.directory)
     assert [i.to_dict() for i in loaded.images] == [item.to_dict()]
 

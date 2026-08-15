@@ -46,6 +46,8 @@ def test_timeline_duration_counts_crossfade_overlap():
 
 def test_build_spec_single_image(tmp_path):
     proj = _project_with_images(tmp_path, count=1, duration=2.0)
+    proj.movie.duration = 2.0  # the single still fills the whole film (007)
+    proj.save()
     spec = render.build_spec(proj, tmp_path / "out.mp4")
     assert spec.total == 2.0
     assert "-loop" in spec.inputs
@@ -65,6 +67,8 @@ def test_build_spec_crossfade_chains(tmp_path):
 
 def test_render_single_image(tmp_path):
     proj = _project_with_images(tmp_path, count=1, duration=1.0)
+    proj.movie.duration = 1.0  # the single still fills the whole film (007)
+    proj.save()
     out = tmp_path / "out.mp4"
     render.render(proj, out)
     assert out.is_file() and out.stat().st_size > 1000
@@ -216,6 +220,7 @@ def test_preview_and_export_same_mix_parity(tmp_path, music, voice):
 def test_missing_channel_is_silence_present_channel_plays(tmp_path):
     """A recorded-but-missing channel becomes silence; the other still plays (FR-010)."""
     proj = _project_with_images(tmp_path, count=1, duration=1.0)
+    proj.movie.duration = 1.0  # the single still fills the whole film (007)
     _attach(proj, "music", tmp_path, {"volume": 0.7})
     proj.movie.voice = model_mod.MediaItem(kind="audio", filename="gone.wav", volume=0.8)
     proj.save()
@@ -226,6 +231,7 @@ def test_missing_channel_is_silence_present_channel_plays(tmp_path):
     assert _probe_duration(extracted) == pytest.approx(1.0, abs=0.2)
 
     baseline = _project_with_images(tmp_path, count=1, duration=1.0)
+    baseline.movie.duration = 1.0  # the single still fills the whole film (007)
     _attach(baseline, "music", tmp_path, {"volume": 0.7})
     baseline.save()
     baseline_mp4 = tmp_path / "baseline.mp4"

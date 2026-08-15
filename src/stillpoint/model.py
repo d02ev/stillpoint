@@ -262,20 +262,23 @@ class Project:
         """Set the project's single background image.
 
         Replaces ``self.images`` with exactly one ``MediaItem(kind="image",
-        filename=..., duration=image_duration)``, then saves ``project.json``
-        immediately and atomically via :meth:`save` (reconciliation R2/R3). No
-        new schema fields — the background reuses the existing ``images`` list
-        (Constitution VIII). Raises ``ValueError`` if the file is not present
-        in ``media/`` (an internal disk race, surfaced as the plain "try again"
-        message). A no-op (no save) when the same filename is already the only
-        entry (R3).
+        filename=..., duration=movie.duration)``, then saves ``project.json``
+        immediately and atomically via :meth:`save` (reconciliation R2/R3). The
+        still background spans the whole film (``movie.duration``), so the
+        timeline — and the background music trimmed to it — lasts the full
+        meditation instead of collapsing to the short default picture length.
+        No new schema fields — the background reuses the existing ``images``
+        list (Constitution VIII). Raises ``ValueError`` if the file is not
+        present in ``media/`` (an internal disk race, surfaced as the plain
+        "try again" message). A no-op (no save) when the same filename is
+        already the only entry (R3).
         """
         source = self.media_dir() / filename
         if not source.is_file():
             raise ValueError(f"no image file named {filename!r} in this project")
         if len(self.images) == 1 and self.images[0].kind == "image" and self.images[0].filename == filename:
             return self.images[0]
-        item = MediaItem(kind="image", filename=filename, duration=self.image_duration)
+        item = MediaItem(kind="image", filename=filename, duration=self.movie.duration)
         self.images = [item]
         self.save()
         return item
